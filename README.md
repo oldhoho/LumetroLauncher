@@ -1,4 +1,6 @@
 # LumetroLauncher
 
-移植自Lumetro风格的全局侧边栏，增加冻结列表导出及批量冻结优化。
+移植自 [queuejw/LumetroLauncher](https://github.com/queuejw/LumetroLauncher)，由 [oldhoho](https://github.com/oldhoho) 简单移植。
+
+增加功能：冻结列表导出、批量冻结优化。
 
