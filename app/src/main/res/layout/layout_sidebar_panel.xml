@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/sidebar_root"
+    android:layout_width="280dp"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#FF333333">
+
+    <TextView
+        android:id="@+id/sidebar_title"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:text="Lumetro"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:gravity="center_vertical"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:textColor="#FFFFFF"
+        android:background="#FF222222" />
+
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/sidebar_fragment_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+</LinearLayout>

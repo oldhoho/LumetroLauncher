@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
+
+    <application
+        android:name=".components.core.Lumetro"
+        android:configChanges="screenSize|orientation|screenLayout|navigation"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/lumetro_icon"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/lumetro_icon_round"
+        android:supportsRtl="true"
+        android:theme="@style/Base.Theme.MPL"
+        tools:targetApi="33">
+        <activity
+            android:name=".main.MainActivity"
+            android:clearTaskOnLaunch="true"
+            android:configChanges="screenSize|orientation|screenLayout|navigation"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustPan">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".fle.FirstLaunchExperienceActivity"
+            android:configChanges="screenSize|orientation"
+            android:exported="true"
+            android:windowSoftInputMode="adjustPan" />
+        <activity
+            android:name=".settings.SettingsActivity"
+            android:exported="true" />
+        <activity
+            android:name=".components.core.error.CriticalErrorActivity"
+            android:exported="true" />
+
+        <!-- 无障碍服务 -->
+        <service
+            android:name=".components.core.sidebar.SidebarAccessibilityService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+        <activity
+            android:name=".components.core.sidebar.TileCustomizeActivity"
+            android:exported="false" />
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <activity android:name=".components.settings.PanelBgPickerActivity" android:exported="false" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+
+</manifest>
