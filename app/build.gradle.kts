@@ -23,7 +23,7 @@ configurations.all {
 android {
     namespace = "ru.queuejw.lumetro"
     compileSdk = 34
-    buildToolsVersion = "34.0.4"
+    buildToolsVersion = "34.0.0"
 
     buildFeatures {
         viewBinding = true
