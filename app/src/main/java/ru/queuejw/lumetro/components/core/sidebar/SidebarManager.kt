@@ -760,8 +760,10 @@ private fun showPanelBgDialog() {
                 val freezeSrc = java.io.File(prefsDir, "freeze.xml")
                 val freezeDest = java.io.File(destDir, "lumetro_freeze_backup.xml")
                 if (freezeSrc.exists()) freezeSrc.copyTo(freezeDest, true)
-                val tileDbSrc = java.io.File(context.filesDir.parent, "databases/tile_database")
+                val tileDbSrc = java.io.File(context.filesDir.parent, "databases/userTiles")
                 val tileDbDest = java.io.File(destDir, "lumetro_tiles_backup.db")
+                coroutineScope.launch(Dispatchers.IO) { db?.getTilesDao()?.getTilesData() }
+                db?.close()
                 if (tileDbSrc.exists()) tileDbSrc.copyTo(tileDbDest, true)
                 src.copyTo(dest, true)
                 Toast.makeText(context, "已导出: ${dest.absolutePath}", Toast.LENGTH_SHORT).show()
@@ -772,21 +774,28 @@ private fun showPanelBgDialog() {
         text = "导入设置"
         setOnClickListener {
             try {
-                val prefsDir = java.io.File(context.filesDir.parent, "shared_prefs")
-                val dest = java.io.File(prefsDir, "settings.xml")
-                val srcDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                val freezeSrcFile = java.io.File(srcDir, "lumetro_freeze_backup.xml")
-                val freezeDestFile = java.io.File(prefsDir, "freeze.xml")
-                if (freezeSrcFile.exists()) freezeSrcFile.copyTo(freezeDestFile, true)
-                val tileDbSrcFile = java.io.File(srcDir, "lumetro_tiles_backup.db")
-                val tileDbDestFile = java.io.File(context.filesDir.parent, "databases/tile_database")
-                if (tileDbSrcFile.exists()) tileDbSrcFile.copyTo(tileDbDestFile, true)
-                val src = java.io.File(srcDir, "lumetro_backup.xml")
-                if (src.exists()) {
-                    src.copyTo(dest, true)
-                    Toast.makeText(context, "已导入，重启生效", Toast.LENGTH_SHORT).show()
-                } else { Toast.makeText(context, "备份文件不存在", Toast.LENGTH_SHORT).show() }
-            } catch (e: Exception) { Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show() }
+    val prefsDir = java.io.File(context.filesDir.parent, "shared_prefs")
+    val dest = java.io.File(prefsDir, "settings.xml")
+    val srcDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+    val freezeSrcFile = java.io.File(srcDir, "lumetro_freeze_backup.xml")
+    val freezeDestFile = java.io.File(prefsDir, "freeze.xml")
+    if (freezeSrcFile.exists()) freezeSrcFile.copyTo(freezeDestFile, true)
+    val tileDbSrcFile = java.io.File(srcDir, "lumetro_tiles_backup.db")
+    val tileDbDestFile = java.io.File(context.filesDir.parent, "databases/userTiles")
+    if (tileDbSrcFile.exists()) {
+    db?.close()
+    // 删掉旧数据库文件和wal/shm
+    tileDbDestFile.delete()
+    java.io.File(context.filesDir.parent, "databases/userTiles-wal").delete()
+    java.io.File(context.filesDir.parent, "databases/userTiles-shm").delete()
+    tileDbSrcFile.copyTo(tileDbDestFile, true)
+}
+    val src = java.io.File(srcDir, "lumetro_backup.xml")
+    if (src.exists()) {
+        src.copyTo(dest, true)
+        Toast.makeText(context, "已导入，重启生效", Toast.LENGTH_SHORT).show()
+    } else { Toast.makeText(context, "备份文件不存在", Toast.LENGTH_SHORT).show() }
+} catch (e: Exception) { Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show() }
         }
     })
 
