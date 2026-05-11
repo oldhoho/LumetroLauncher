@@ -760,6 +760,9 @@ private fun showPanelBgDialog() {
                 val freezeSrc = java.io.File(prefsDir, "freeze.xml")
                 val freezeDest = java.io.File(destDir, "lumetro_freeze_backup.xml")
                 if (freezeSrc.exists()) freezeSrc.copyTo(freezeDest, true)
+                val tileDbSrc = java.io.File(context.filesDir.parent, "databases/tile_database")
+                val tileDbDest = java.io.File(destDir, "lumetro_tiles_backup.db")
+                if (tileDbSrc.exists()) tileDbSrc.copyTo(tileDbDest, true)
                 src.copyTo(dest, true)
                 Toast.makeText(context, "已导出: ${dest.absolutePath}", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) { Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show() }
@@ -775,6 +778,9 @@ private fun showPanelBgDialog() {
                 val freezeSrcFile = java.io.File(srcDir, "lumetro_freeze_backup.xml")
                 val freezeDestFile = java.io.File(prefsDir, "freeze.xml")
                 if (freezeSrcFile.exists()) freezeSrcFile.copyTo(freezeDestFile, true)
+                val tileDbSrcFile = java.io.File(srcDir, "lumetro_tiles_backup.db")
+                val tileDbDestFile = java.io.File(context.filesDir.parent, "databases/tile_database")
+                if (tileDbSrcFile.exists()) tileDbSrcFile.copyTo(tileDbDestFile, true)
                 val src = java.io.File(srcDir, "lumetro_backup.xml")
                 if (src.exists()) {
                     src.copyTo(dest, true)

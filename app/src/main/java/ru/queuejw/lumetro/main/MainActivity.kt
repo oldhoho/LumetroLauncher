@@ -1,4 +1,5 @@
 package ru.queuejw.lumetro.main
+import android.accessibilityservice.AccessibilityServiceInfo
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -26,6 +27,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!android.os.Environment.isExternalStorageManager()) {
+            startActivity(Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:ru.queuejw.lumetro")))
+        }
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
+        val enabled = am.getEnabledAccessibilityServiceList(android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK).any { it.resolveInfo.serviceInfo.packageName == packageName }
+        if (!enabled) {
+            startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
 
         // 设置窗口全屏，壁纸覆盖状态栏
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
