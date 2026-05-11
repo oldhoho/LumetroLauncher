@@ -478,14 +478,9 @@ inner class TileAdapter(private var tiles: List<TileEntity>, private val iconSiz
         if (t.tileType == -2) {
     h.label.visibility = View.GONE
     h.icon.visibility = View.GONE
+        h.c.background = null
     h.c.post {
-        h.c.background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(0x00000000)
-            setCornerRadius(16f)
-            setStroke(1, 0x30FFFFFF.toInt())
-        }
-        val wv = LayoutInflater.from(context).inflate(R.layout.tile_weather, null)
+        val wv = LayoutInflater.from(context).inflate(R.layout.tile_weather, h.c, false)
         val district = wv.findViewById<TextView>(R.id.districtName)
         val temp = wv.findViewById<TextView>(R.id.today_tem)
         val tomorrow = wv.findViewById<TextView>(R.id.tomorrow)
@@ -496,6 +491,7 @@ inner class TileAdapter(private var tiles: List<TileEntity>, private val iconSiz
         val update = wv.findViewById<TextView>(R.id.updateTime)
         district.text = t.tileLabel ?: "北京"
         h.c.removeAllViews()
+        wv.layoutParams = android.widget.FrameLayout.LayoutParams(android.widget.FrameLayout.LayoutParams.MATCH_PARENT, android.widget.FrameLayout.LayoutParams.MATCH_PARENT)
         h.c.addView(wv)
         coroutineScope.launch(Dispatchers.IO) {
             val data = ru.queuejw.lumetro.components.weather.WeatherFetcher.fetchWeather(t.tileLabel ?: "北京")
