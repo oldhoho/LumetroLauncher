@@ -1,12 +1,12 @@
 {
   "allFiles": [
     {
-      "file": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/build.gradle.kts",
+      "file": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/gradle.properties",
       "selection": {
         "end": {
           "column": 0,
-          "index": 2623,
-          "line": 90
+          "index": 1518,
+          "line": 26
         },
         "start": {
           "column": 0,
@@ -16,5 +16,5 @@
       }
     }
   ],
-  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/build.gradle.kts"
+  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/gradle.properties"
 }

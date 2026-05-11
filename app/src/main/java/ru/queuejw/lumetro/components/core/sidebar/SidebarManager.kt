@@ -300,7 +300,7 @@ class SidebarManager(private val context: Context) {
             return super.onTouchEvent(event)
         }
     }.apply { addView(contentContainer) }
-    if (cachedTiles.isEmpty()) { val fresh = TileDatabase.getTileData(context.applicationContext).getTilesDao().getTilesData(); cachedTiles.addAll(fresh.filter { it.tileType != -1 }) }
+    if (cachedTiles.isEmpty()) { coroutineScope.launch(Dispatchers.IO) { val fresh = TileDatabase.getTileData(context.applicationContext).getTilesDao().getTilesData(); cachedTiles.clear(); cachedTiles.addAll(fresh.filter { it.tileType != -1 }); withContext(Dispatchers.Main) { loadTilesContent() } } }
     loadTilesContent()
 }
 
