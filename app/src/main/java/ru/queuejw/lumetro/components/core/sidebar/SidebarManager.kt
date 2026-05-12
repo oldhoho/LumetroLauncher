@@ -1,4 +1,5 @@
 package ru.queuejw.lumetro.components.core.sidebar
+import kotlinx.coroutines.isActive
 
 import android.view.LayoutInflater
 import ru.queuejw.lumetro.R
@@ -416,6 +417,7 @@ fun refreshAppsIfNeeded() {
         cachedApps = withContext(Dispatchers.IO) {
             val pm = context.packageManager
             val all = pm.getInstalledApplications(PackageManager.GET_META_DATA or PackageManager.GET_DISABLED_COMPONENTS)
+            if (!isActive) return@withContext emptyList<App>()
             val list = ArrayList<App>()
             for (info in all) {
                 if (info.packageName == context.packageName) continue
