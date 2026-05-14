@@ -908,7 +908,6 @@ private fun performOneKeyFreeze() {
 }
 
 private fun showFreezeListDialog() {
-        hidePanel()
     val layout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(16, 16, 16, 16); setBackgroundColor(Color.DKGRAY) }
     layout.addView(TextView(context).apply { text = "可冻结应用列表"; textSize = 18f; setTextColor(Color.WHITE); setPadding(0, 8, 0, 16) })
     val scrollView = ScrollView(context).apply { layoutParams = LinearLayout.LayoutParams(280.dpToPx(), 350.dpToPx()) }

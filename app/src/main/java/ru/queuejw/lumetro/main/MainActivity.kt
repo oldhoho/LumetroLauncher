@@ -30,6 +30,7 @@ class MainActivity : AppCompatActivity() {
         if (!android.os.Environment.isExternalStorageManager()) {
             startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:ru.queuejw.lumetro")))
         }
+        startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
 
         // 设置窗口全屏，壁纸覆盖状态栏
