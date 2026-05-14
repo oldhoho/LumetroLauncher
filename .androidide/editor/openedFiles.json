@@ -1,0 +1,20 @@
+{
+  "allFiles": [
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/core/sidebar/SidebarManager.kt",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 78097,
+          "line": 1251
+        },
+        "start": {
+          "column": 1,
+          "index": 78097,
+          "line": 1251
+        }
+      }
+    }
+  ],
+  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/core/sidebar/SidebarManager.kt"
+}

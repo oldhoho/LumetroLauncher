@@ -908,6 +908,7 @@ private fun performOneKeyFreeze() {
 }
 
 private fun showFreezeListDialog() {
+        hidePanel()
     val layout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(16, 16, 16, 16); setBackgroundColor(Color.DKGRAY) }
     layout.addView(TextView(context).apply { text = "可冻结应用列表"; textSize = 18f; setTextColor(Color.WHITE); setPadding(0, 8, 0, 16) })
     val scrollView = ScrollView(context).apply { layoutParams = LinearLayout.LayoutParams(280.dpToPx(), 350.dpToPx()) }
@@ -1232,21 +1233,24 @@ private fun createEditPanelView(t: TileEntity): View {
     }
 
     private fun pinApp(a: App) {
-        coroutineScope.launch(Dispatchers.IO) {
-            val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
-            val slot = tiles.indexOfFirst { it.tileType == -1 }
-            if (slot >= 0) {
-                tiles[slot] = TileEntity(tiles[slot].id, slot, null, -1, 0, 0, a.mName, a.mPackage)
-                dao.updateAllTiles(tiles)
-                val remainingSlots = tiles.count { it.tileType == -1 }
-                if (remainingSlots < 2) {
-                    val newPos = tiles.size
-                    dao.insertTile(TileEntity(tilePosition = newPos, tileColor = null, tileCornerRadius = -1, tileType = -1, tileSize = 0, tileLabel = null, tilePackage = null))
-                }
-                withContext(Dispatchers.Main) { Toast.makeText(context, "已固定: ${a.mName}", Toast.LENGTH_SHORT).show(); refreshTilesIfNeeded(); refreshAppsIfNeeded() }
-            } else withContext(Dispatchers.Main) { Toast.makeText(context, "没有空余位置", Toast.LENGTH_SHORT).show() }
+    val pkg = a.mPackage ?: return
+    coroutineScope.launch(Dispatchers.IO) {
+        val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
+        // 检查是否已固定，避免重复
+        if (tiles.any { it.tilePackage == pkg && it.tileType != -1 }) return@launch
+        val slot = tiles.indexOfFirst { it.tileType == -1 }
+        if (slot >= 0) {
+            // 跳过系统应用和非启动器应用
+            val info = try { packageManager.getApplicationInfo(pkg, 0) } catch (e: Exception) { null }
+            if (info == null || (info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) return@launch
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
+            if (packageManager.queryIntentActivities(intent, 0).isEmpty()) return@launch
+            val name = try { packageManager.getApplicationLabel(info).toString() } catch (ex: Exception) { pkg.substringAfterLast(".") }
+            tiles[slot] = TileEntity(tiles[slot].id, slot, null, -1, 0, 0, name, pkg)
+            dao.updateAllTiles(tiles); withContext(Dispatchers.Main) { refreshTilesIfNeeded() }
         }
     }
+}
 
     // ===== 切换与动画 =====
     private fun switchToLevel(lv: PanelLevel) {
