@@ -1,0 +1,235 @@
+<resources>
+    <string name="app_name">Lumetro</string>
+
+    <string name="restart">重启</string>
+    <string name="on">开启</string>
+    <string name="off">关闭</string>
+    <string name="yes">是</string>
+    <string name="no">否</string>
+    <string name="launcher">启动器</string>
+    <string name="back">返回</string>
+    <string name="next">下一步</string>
+    <string name="accept">接受</string>
+    <string name="reject">拒绝</string>
+    <string name="cancel">取消</string>
+    <string name="save">保存</string>
+    <string name="exit">退出</string>
+    <string name="send">发送</string>
+
+    <string name="warning_uc">警告</string>
+    <string name="warning_lc">警告</string>
+    <string name="warning">警告</string>
+
+    <string name="error">错误</string>
+
+    <!-- 主题 -->
+    <string name="auto">自动</string>
+    <string name="dark">深色</string>
+    <string name="light">浅色</string>
+
+    <!-- 应用列表 -->
+    <string name="no_results_for">未找到结果\u0020</string>
+    <string name="app_info">应用信息</string>
+    <string name="pin_to_start">固定到开始屏幕</string>
+    <string name="uninstall_app">卸载</string>
+
+    <!-- 颜色 -->
+    <string name="custom_color">自定义颜色</string>
+    <string name="color_lime">青柠色</string>
+    <string name="color_green">绿色</string>
+    <string name="color_emerald">翡翠色</string>
+    <string name="color_cyan">青色</string>
+    <string name="color_teal">蓝绿色</string>
+    <string name="color_cobalt">钴蓝色</string>
+    <string name="color_indigo">靛蓝色</string>
+    <string name="color_violet">紫罗兰色</string>
+    <string name="color_pink">粉色</string>
+    <string name="color_magenta">洋红色</string>
+    <string name="color_crimson">深红色</string>
+    <string name="color_red">红色</string>
+    <string name="color_orange">橙色</string>
+    <string name="color_mauve">淡紫色</string>
+    <string name="color_steel">钢青色</string>
+    <string name="color_olive">橄榄色</string>
+    <string name="color_amber">琥珀色</string>
+    <string name="color_taupe">灰褐色</string>
+    <string name="color_yellow">黄色</string>
+    <string name="color_brown">棕色</string>
+    <string name="color_dynamic">动态颜色</string>
+
+    <!-- 关于 -->
+    <string name="phone_information">手机信息</string>
+    <string name="phone_info" formatted="false">名称：%s\n型号：%s\nLumetro：%s</string>
+    <string name="more_info">更多信息</string>
+    <string name="phone_more_info" formatted="false">Lumetro 版本：%s\nLumetro 版本号：%d\n设备：%s\n手机品牌：%s\n手机型号：%s\n产品：%s\n硬件：%s\n构建版本：%s\n构建时间：%d</string>
+    <string name="help_contacts">帮助与联系</string>
+    <string name="get_help">获取帮助：github.com/queuejw/lumetrolauncher/issues</string>
+    <string name="online_content">在线内容</string>
+    <string name="support_devs_text">支持开发者：https://donationalerts.com/r/queuejw</string>
+    <string name="reset_your_launcher">重置启动器</string>
+
+    <!-- 设置 -->
+    <string name="advanced_options">高级选项</string>
+
+    <!-- 设置主界面 -->
+    <string name="settings_activity_title">设置</string>
+    <string name="start_theme">开始+主题</string>
+    <string name="start_theme_sub">自定义您的手机</string>
+    <string name="feedback">反馈</string>
+    <string name="feedback_sub">帮助我改进 Lumetro 启动器</string>
+    <string name="about">关于</string>
+    <string name="about_sub">关于您的手机信息</string>
+    <string name="for_developers">开发者选项</string>
+
+    <!-- 主题设置 -->
+    <string name="settings_theme_accent_title_part1">主题色\u0020</string>
+    <string name="settings_theme_accent_title_part2">更改手机背景和\u0020</string>
+    <string name="settings_theme_accent_title_part3">以匹配您今天、本周或本月的心情\u0020</string>
+    <string name="theme_background">背景</string>
+    <string name="accent_color">主题色</string>
+    <string name="dynamicColor_setting">您可以使用壁纸颜色作为主题色</string>
+    <string name="dynamicColor_switch">使用动态颜色</string>
+    <string name="dynamicColor_error">您的设备不支持此功能。</string>
+    <string name="show_more_tiles_title">显示更多磁贴</string>
+    <string name="show_more_tiles_sub">您可以更改开始屏幕上可用磁贴的大小和数量</string>
+    <string name="auto_pin_apps">自动将应用固定到开始屏幕</string>
+
+    <!-- 磁贴设置 -->
+    <string name="tiles">磁贴</string>
+    <string name="tiles_sub">磁贴外观</string>
+    <string name="appearance_of_tiles">磁贴外观</string>
+    <string name="corner_radius">圆角半径</string>
+    <string name="tile_customization">磁贴自定义</string>
+    <string name="change_label">更改标签</string>
+    <string name="click_to_choose_icon">点击选择背景图\n长按重置背景</string>
+
+    <!-- 反馈设置 -->
+    <string name="feedback_title">发送启动器使用反馈以帮助改进 Lumetro 启动器</string>
+    <string name="show_error_details">在错误屏幕上显示详细信息</string>
+    <string name="save_errors">自动保存错误数据</string>
+    <string name="erase_feedback_data">确定要删除所有已收集的数据吗？</string>
+    <string name="show_collected_data">显示已收集的数据</string>
+    <string name="delete_collected_data">删除所有已收集的数据</string>
+    <string name="feedback_list_hint">点击分享按钮将数据发送给开发者</string>
+    <string name="feedback_empty_list">我们还没有收集到任何数据。</string>
+    <string name="dialog_copy_success">错误详情已复制到剪贴板</string>
+    <string name="feedback_email_tip">发送邮件</string>
+    <string name="feedback_email_placeholder">Lumetro 未按预期工作（如果可以，请详细描述您的问题）</string>
+    <string name="use_accent_error_screen">使用主题色作为错误屏幕背景</string>
+
+    <!-- 颜色选择对话框 -->
+    <string name="choose_color_title">在下方选择颜色</string>
+    <string name="color_preview_title">预览</string>
+    <string name="choose_default_colors_title">或使用标准颜色</string>
+    <string name="select_color">选择颜色</string>
+
+    <!-- 首次启动引导 -->
+    <string name="fle_on_back_pressed_message">确定要关闭启动器吗？</string>
+    
+    <!-- 欢迎界面 -->
+    <string name="fle_skip_setup">跳过设置？</string>
+    <string name="fle_skip_setup_u"><u>跳过设置？</u></string>
+    <string name="skip_fle_dialog_message">您可以跳过启动器设置。在这种情况下，将应用默认设置。继续即表示您同意 Lumetro 的使用条款</string>
+    <string name="fle_welcome_title">您好！\n感谢您安装 Lumetro。\n现在我们将帮助您设置启动器</string>
+
+    <!-- 应用选择界面 -->
+    <string name="apps">应用</string>
+    <string name="fle_apps_empty_list_warn">确定不将任何应用固定到开始屏幕吗？</string>
+    <string name="fle_apps_counter">已固定：%1$d / %2$d</string>
+    <string name="pin_all">全选</string>
+    <string name="unpin_all">取消全选</string>
+    <string name="fle_apps_hint">将您喜欢的应用固定到开始屏幕</string>
+    <string name="launch_app_error">无法启动此应用。</string>
+
+    <!-- 设置完成 -->
+    <string name="fle_almost_done">即将完成</string>
+    <string name="fle_setup_complete">设置完成！</string>
+    <string name="fle_setup_complete_sub_1">您现在可以开始使用了。</string>
+    <string name="fle_setup_complete_sub_2">感谢您尝试 Lumetro。\n希望您会喜欢！</string>
+    <string name="get_started">开始使用</string>
+
+    <!-- 主题设置界面 -->
+    <string name="personalization">个性化</string>
+    <string name="fle_theme_hint">让我们自定义您的主题，让它有家的感觉</string>
+    <string name="fle_theme_background_question">您更喜欢哪种背景？</string>
+    <string name="fle_theme_color_question">您最喜欢什么颜色？</string>
+
+    <!-- 早期体验 -->
+    <string name="early_access">早期体验</string>
+    <string name="fle_early_access_disclaimer">请注意，Lumetro 仍在积极开发中（也许）。\n\n这意味着您在使用应用时可能会遇到问题（包括严重问题）。\n如果您发现错误或想建议新功能，请在 GitHub 上报告：https://github.com/queuejw/LumetroLauncher\n\n如果 Lumetro 不符合您的期望，您可以随时停止使用。\n\n感谢您的理解！</string>
+    <string name="fle_ea_data_collection_hint">如果在使用应用时发生错误，我们会自动保存错误数据然后通知您。之后，您可以与我们分享这些信息或将其删除。我们不会自动发送这些数据。所有内容都存储在本设备上。稍后将提供更多详细信息。</string>
+    <string name="what_is_this"><u>这是什么？</u></string>
+    <string name="fle_ea_checkbox">我已知晓此信息</string>
+    <string name="fle_ea_data_collection_checkbox">允许收集错误数据</string>
+
+    <!-- 使用条款 -->
+    <string name="tou_fragment_title">在开始之前</string>
+    <string name="tou">使用条款</string>
+    <string name="app_description">Lumetro 是一个开源的 Android 启动器。它不包含任何付费功能，完全免费。\n\nhttps://github.com/queuejw/LumetroLauncher</string>
+    <string name="usage_terms">您可以不受任何限制地使用此应用。以下是对您在使用启动器时可能遇到的某些方面的说明。</string>
+    <string name="security_warning">如果您从第三方来源下载了此应用，请改为从官方来源安装。只有在您信任来源的情况下才继续使用此应用。</string>
+    <string name="data_collection_header">如前所述，我们会收集一些设备数据以帮助我们更快地修复应用问题。以下是我们收集的信息：</string>
+    <string-array name="collected_data_items">
+        <item>问题发生时间</item>
+        <item>设备型号</item>
+        <item>Lumetro 版本</item>
+        <item>Lumetro 构建号</item>
+        <item>Android 版本</item>
+        <item>堆栈跟踪（错误详情）</item>
+    </string-array>
+    <string name="data_storage_info">所有数据都存储在您设备上的应用存储中。您可以在以下位置查看收集的数据：\n\nLumetro 设置 -> 反馈 -> 显示已收集的数据。\n\n您可以选择将其发送给我们（以帮助修复问题）或将其删除。\n\n注意：我们不会自动发送您的数据，而是在每次错误后将其收集到本地。您可以在 Lumetro 设置中更改此设置。如果禁用，我们将停止收集任何设备或应用数据。</string>
+    <string name="tou_disclaimer_text">本应用按"""原样"""提供。开发者不保证应用稳定运行，也不对因使用本应用而产生的任何后果承担责任。\n\n如有疑问，请通过以下方式联系我们：\n电报：@lumetro_launcher (https://t.me/lumetro_launcher)\n或电子邮件：dimon6018t@gmail.com。</string>
+
+    <!-- 拒绝使用条款 -->
+    <string name="tou_rejected_title">感谢您对 Lumetro 的关注！</string>
+    <string name="tou_rejected_message">您现在可以关闭应用</string>
+
+    <!-- 更新 -->
+    <string name="updates">更新</string>
+    <string name="check_for_updates">检查更新</string>
+    <string name="check_for_updates_title">下载最新版本的 Lumetro</string>
+    <string name="launcher_update">启动器更新</string>
+    <string name="launcher_update_sub">获取软件更新</string>
+
+    <!-- 卸载对话框 -->
+    <string name="uninstall_app_dialog_title">卸载此应用？</string>
+    <string name="uninstall_app_dialog_message">此应用及其包含的所有信息将从您的手机中删除</string>
+
+    <!-- 实验功能 -->
+    <string name="experiments_unavailable">没有可用的实验功能。\n它们可能会在未来的更新中出现。</string>
+    <string name="experiments">实验功能</string>
+    <string name="experiments_sub">如果您按下它，一切都会崩溃。</string>
+    <string name="experiments_activated">看起来有什么东西变了？</string>
+
+    <!-- 编辑模式设置 -->
+    <string name="editmode">编辑模式</string>
+    <string name="editmode_sub">与磁贴的交互</string>
+    <string name="edit_mode_anim">在编辑模式下启用动画</string>
+    <string name="block_edit_mode">禁用编辑模式</string>
+    <string name="block_edit_mode_sub">您可以使用此设置禁止更改磁贴</string>
+
+    <!-- 导航栏设置 -->
+    <string name="navbar_label">导航</string>
+    <string name="navbar_disable">禁用导航栏</string>
+
+    <!-- 图标包 -->
+    <string name="icons">图标</string>
+    <string name="icons_sub">图标包</string>
+    <string name="current_icon_pack">当前已安装：%s</string>
+    <string name="icon_packs">图标包</string>
+    <string name="select_icon_pack">选择图标包</string>
+    <string name="remove_icon_pack">移除图标包</string>
+    <string name="clear_icon_cache">清除图标缓存</string>
+    <string name="icons_warn">当您更改图标包或清除图标缓存时，应用可能会比平时运行得慢。我们需要一点时间将新图标保存到缓存中。</string>
+    <string name="icon_pack_removed_message">图标包已禁用。</string>
+    <string name="icon_pack_error">在您的手机上找不到任何图标包。</string>
+    <string name="icon_pack_installed_message">图标包已安装：%1$s</string>
+
+    <!-- 应用固定 -->
+    <string name="pin_app_error">无法固定应用 %1$s</string>
+
+    <!-- 重置启动器 -->
+    <string name="reset_msg">重置启动器将删除所有磁贴设置、主题和开始菜单。这不会影响手机应用和个人数据。确定要继续吗？</string>
+    <string name="reset_title">警告！</string>
+    <string name="accessibility_service_description">Lumetro 侧边栏无障碍服务，用于在其他应用上层显示侧边栏</string>
+</resources>
