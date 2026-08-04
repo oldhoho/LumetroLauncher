@@ -123,7 +123,7 @@ class SidebarManager(private val context: Context) {
     private val packageManager = context.packageManager
     private val appManager = AppManager()
     private val prefs = Prefs(context)
-    private var iconLoader = IconLoader(prefs.iconPackPackage != null, prefs.iconPackPackage)
+    var iconLoader = IconLoader(prefs.iconPackPackage != null, prefs.iconPackPackage)
     private val collator by lazy { Collator.getInstance(Locale.CHINESE) }
 
     private val standardColors = arrayOf(
@@ -247,7 +247,18 @@ class SidebarManager(private val context: Context) {
             try {
                 val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
                 val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
-                if (bm != null) panelBgBitmap = bm; this.background = BitmapDrawable(context.resources, bm)
+                if (bm != null) {
+    panelBgBitmap = bm
+    val screenHeight = context.resources.displayMetrics.heightPixels
+    val scale = Math.max(tilesWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
+    val scaledWidth = (bm.width * scale).toInt()
+    val scaledHeight = (bm.height * scale).toInt()
+    val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
+    val x = (scaledWidth - tilesWidth) / 2
+    val y = (scaledHeight - screenHeight) / 2
+    val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), tilesWidth, screenHeight)
+    this.background = BitmapDrawable(context.resources, cropped)
+}
             } catch (e: Exception) {}
         }
         // 液态玻璃效果（Android 13+）
@@ -382,7 +393,18 @@ fun refreshPanelBackground() {
         try {
             val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
             val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
-            if (bm != null) panelBgBitmap = bm; contentContainer?.background = BitmapDrawable(context.resources, bm)
+            if (bm != null) {
+    panelBgBitmap = bm
+    val screenHeight = context.resources.displayMetrics.heightPixels
+    val scale = Math.max(appsWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
+    val scaledWidth = (bm.width * scale).toInt()
+    val scaledHeight = (bm.height * scale).toInt()
+    val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
+    val x = (scaledWidth - appsWidth) / 2
+    val y = (scaledHeight - screenHeight) / 2
+    val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), appsWidth, screenHeight)
+    contentContainer?.background = BitmapDrawable(context.resources, cropped)
+}
         } catch (e: Exception) {}
     }
 }
@@ -725,8 +747,6 @@ private fun showPanelBgDialog() {
     content.addView(bgImageInput)
     content.addView(android.widget.Button(context).apply { text = "从相册选择背景图"; setOnClickListener { currentPopup?.dismiss(); hidePanel(); context.startActivity(Intent(context, PanelBgPickerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
 
-    content.addView(TextView(context).apply { text = "桌面壁纸"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    content.addView(android.widget.Button(context).apply { text = "选择壁纸"; setOnClickListener { currentPopup?.dismiss(); hidePanel(); context.startActivity(Intent(context, PanelBgPickerActivity::class.java).putExtra("target", "main_bg").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
 
     content.addView(TextView(context).apply { text = "面板透明度"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
     val alphaSlider = SeekBar(context).apply { max = 100; progress = (prefs.panelBackgroundAlpha * 100).toInt() }
@@ -785,7 +805,18 @@ private fun showPanelBgDialog() {
                 if (bg.isNotEmpty()) {
                     val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
                     val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
-                    if (bm != null) panelBgBitmap = bm; contentContainer?.background = BitmapDrawable(context.resources, bm)
+                    if (bm != null) {
+    panelBgBitmap = bm
+    val screenHeight = context.resources.displayMetrics.heightPixels
+    val scale = Math.max(appsWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
+    val scaledWidth = (bm.width * scale).toInt()
+    val scaledHeight = (bm.height * scale).toInt()
+    val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
+    val x = (scaledWidth - appsWidth) / 2
+    val y = (scaledHeight - screenHeight) / 2
+    val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), appsWidth, screenHeight)
+    contentContainer?.background = BitmapDrawable(context.resources, cropped)
+}
                 }
             } catch (e: Exception) { }
             currentPopup?.dismiss(); hidePanel()

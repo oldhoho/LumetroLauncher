@@ -11,6 +11,7 @@ import android.os.Handler
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import ru.queuejw.lumetro.components.core.receivers.AppReceiver
+import ru.queuejw.lumetro.components.freeform.WorkbenchOverlay
 
 class SidebarAccessibilityService : AccessibilityService() {
 
@@ -18,6 +19,11 @@ class SidebarAccessibilityService : AccessibilityService() {
         private const val TAG = "SidebarA11yService"
         var sidebarManager: SidebarManager? = null
             private set
+        var workbenchOverlay: WorkbenchOverlay? = null
+            private set
+        private var instance: SidebarAccessibilityService? = null
+
+        fun getInstance(): SidebarAccessibilityService? = instance
 
         fun isServiceEnabled(context: Context): Boolean {
             val serviceName = "${context.packageName}/${SidebarAccessibilityService::class.java.name}"
@@ -29,13 +35,38 @@ class SidebarAccessibilityService : AccessibilityService() {
                 } else false
             } catch (e: Exception) { false }
         }
+
+        fun toggleWorkbench() {
+            workbenchOverlay?.toggle()
+        }
+
+        fun isWorkbenchShowing(): Boolean {
+            return workbenchOverlay?.isShowing() ?: false
+        }
+
+        fun openRecentTasks() {
+            instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+        }
+
+        fun updateForegroundApp(packageName: String) {
+            workbenchOverlay?.updateForegroundApp(packageName)
+        }
+
+        fun showWorkbench() {
+            workbenchOverlay?.show()
+        }
+
+        fun refreshWorkbenchGesture() {
+        }
     }
 
     private var receiver: BroadcastReceiver? = null
     private var appReceiver: AppReceiver? = null
+    private var lastPackage = ""
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         serviceInfo = AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPES_ALL_MASK
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
@@ -43,6 +74,7 @@ class SidebarAccessibilityService : AccessibilityService() {
             notificationTimeout = 100
         }
         Log.d(TAG, "Accessibility service connected")
+
         try {
             sidebarManager = SidebarManager(this).apply {
                 Handler().postDelayed({
@@ -51,10 +83,39 @@ class SidebarAccessibilityService : AccessibilityService() {
                 }, 500)
             }
             Log.d(TAG, "Sidebar initialized successfully")
-        } catch (e: Exception) { Log.e(TAG, "Failed to init sidebar", e) }
+
+            workbenchOverlay = WorkbenchOverlay(this)
+            Log.d(TAG, "Workbench initialized successfully")
+
+            Handler().postDelayed({
+                workbenchOverlay?.show()
+                Log.d(TAG, "Workbench shown")
+            }, 500)
+
+        } catch (e: Exception) { Log.e(TAG, "Failed to init", e) }
+
         setupReceiver()
         setupAppReceiver()
     }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val pkg = event.packageName?.toString()
+            if (pkg != null && pkg.isNotEmpty() && pkg != lastPackage) {
+                if (pkg.startsWith("android.")) return
+                if (pkg.startsWith("com.google.android.")) return
+                if (pkg == "android") return
+                if (pkg == "com.android.systemui") return
+                if (pkg == packageName) return
+
+                lastPackage = pkg
+                Log.d(TAG, "Foreground app changed: $pkg")
+                workbenchOverlay?.updateForegroundApp(pkg)
+            }
+        }
+    }
+
+    override fun onInterrupt() {}
 
     private fun setupReceiver() {
         receiver = object : BroadcastReceiver() {
@@ -72,9 +133,11 @@ class SidebarAccessibilityService : AccessibilityService() {
                     Intent.ACTION_SCREEN_OFF -> {
                         sidebarManager?.hidePanelImmediately()
                         sidebarManager?.destroyGestureStrip()
+                        workbenchOverlay?.hide()
                     }
                     Intent.ACTION_USER_PRESENT -> {
                         sidebarManager?.createGestureStrip()
+                        workbenchOverlay?.show()
                     }
                 }
             }
@@ -108,14 +171,13 @@ class SidebarAccessibilityService : AccessibilityService() {
         sidebarManager = SidebarManager(this).apply { createGestureStrip(); configureTouchPassthrough() }
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {}
-    override fun onInterrupt() {}
-
     override fun onDestroy() {
         super.onDestroy()
+        instance = null
         receiver?.let { try { unregisterReceiver(it) } catch (e: Exception) {} }
         appReceiver?.let { try { AppReceiver.unregister(this, it) } catch (e: Exception) {} }
         appReceiver = null; receiver = null
         sidebarManager?.destroy(); sidebarManager = null
+        workbenchOverlay?.cleanup(); workbenchOverlay = null
     }
 }

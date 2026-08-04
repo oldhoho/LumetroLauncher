@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+
     <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
 
     <application
@@ -19,7 +20,6 @@
         android:supportsRtl="true"
         android:theme="@style/Base.Theme.MPL"
         tools:targetApi="33">
-
         <activity
             android:name=".main.MainActivity"
             android:clearTaskOnLaunch="true"
@@ -27,30 +27,29 @@
             android:exported="true"
             android:launchMode="singleInstance"
             android:excludeFromRecents="true"
-            android:resizeableActivity="false"
+            android:resizeableActivity="true"
             android:windowSoftInputMode="adjustPan">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
         <activity
             android:name=".fle.FirstLaunchExperienceActivity"
             android:configChanges="screenSize|orientation"
             android:exported="true"
             android:windowSoftInputMode="adjustPan" />
-
         <activity
             android:name=".settings.SettingsActivity"
             android:exported="true" />
-
         <activity
             android:name=".components.core.error.CriticalErrorActivity"
             android:exported="true" />
 
+        <!-- 无障碍服务 -->
         <service
             android:name=".components.core.sidebar.SidebarAccessibilityService"
             android:exported="true"
@@ -62,11 +61,9 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
-
         <activity
             android:name=".components.core.sidebar.TileCustomizeActivity"
             android:exported="false" />
-
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -74,12 +71,8 @@
             android:exported="true"
             android:multiprocess="false"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
-
-        <activity
-            android:name=".components.settings.PanelBgPickerActivity"
-            android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-
+        <activity android:name=".components.settings.PanelBgPickerActivity" android:exported="false" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- 自由窗口辅助 Activity（完全透明不可见） -->
         <activity
             android:name=".components.freeform.activity.InvisibleActivityFreeform"
             android:configChanges="orientation|screenSize|keyboardHidden"
@@ -89,18 +82,12 @@
             android:multiprocess="true"
             android:noHistory="true"
             android:process=":freeform_hack"
-            android:resizeableActivity="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
-        <!-- 工作台 - 移除 Fullscreen 主题，让状态栏显示 -->
         <activity
-            android:name=".components.freeform.WorkbenchActivity"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:resizeableActivity="false"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:theme="@style/Base.Theme.MPL"
-            android:windowSoftInputMode="adjustNothing" />
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
     </application>
 

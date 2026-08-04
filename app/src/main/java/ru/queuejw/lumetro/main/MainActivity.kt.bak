@@ -8,7 +8,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
-import android.app.WallpaperManager
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -107,16 +106,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadWallpaper() {
-        try {
-            val wallpaperManager = WallpaperManager.getInstance(this)
-            val wallpaperDrawable = wallpaperManager.drawable
-            if (wallpaperDrawable != null) {
-                wallpaperView.setImageDrawable(wallpaperDrawable)
-            } else {
+        val savedBg = getSharedPreferences("settings", MODE_PRIVATE).getString("main_bg_image", "")
+        if (!savedBg.isNullOrEmpty()) {
+            try {
+                val raw = android.util.Base64.decode(savedBg, android.util.Base64.DEFAULT)
+                val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                if (bm != null) {
+                    val sw = resources.displayMetrics.widthPixels
+                    val sh = resources.displayMetrics.heightPixels
+                    val scale = Math.max(sw.toFloat() / bm.width, sh.toFloat() / bm.height)
+                    val sw2 = (bm.width * scale).toInt()
+                    val sh2 = (bm.height * scale).toInt()
+                    val scaled = Bitmap.createScaledBitmap(bm, sw2, sh2, true)
+                    val x = (sw2 - sw) / 2
+                    val y = (sh2 - sh) / 2
+                    val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), sw, sh)
+                    wallpaperView.setImageBitmap(cropped)
+                }
+            } catch (e: Exception) {
                 wallpaperView.setBackgroundColor(0xFF000000.toInt())
             }
-        } catch (e: Exception) {
-            wallpaperView.setBackgroundColor(0xFF000000.toInt())
         }
     }
 

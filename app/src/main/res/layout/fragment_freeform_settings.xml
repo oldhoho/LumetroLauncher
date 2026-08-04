@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="🪟 自由窗口"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="让应用在可自由调整大小的窗口中打开"
+        android:textColor="#888888"
+        android:textSize="14sp"
+        android:layout_marginBottom="24dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#2A2A2A"
+        android:padding="16dp"
+        android:layout_marginBottom="16dp">
+
+        <CheckBox
+            android:id="@+id/cb_freeform_enable"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="启用自由窗口模式"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tv_freeform_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🟢 自由窗口模式已启用"
+        android:textColor="#4CAF50"
+        android:textSize="14sp"
+        android:padding="12dp"
+        android:background="#1A1A1A"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/btn_freeform_test"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:text="🧪 测试自由窗口（打开设置）"
+        android:backgroundTint="#2196F3"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="⚠️ 需要悬浮窗权限才能使用自由窗口"
+        android:textColor="#FF5722"
+        android:textSize="12sp"
+        android:layout_marginTop="16dp" />
+
+</LinearLayout>

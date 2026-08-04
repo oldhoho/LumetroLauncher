@@ -14,9 +14,14 @@ class SettingsActivity : AppCompatActivity() {
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // 默认显示主题设置
-        supportFragmentManager.beginTransaction()
-            .replace(binding.fragmentContainerView.id, ThemeSettingsFragment())
-            .commit()
+        if (intent.getBooleanExtra("open_icons", false)) {
+            supportFragmentManager.beginTransaction()
+                .replace(binding.fragmentContainerView.id, IconSettingsFragment())
+                .commit()
+        } else {
+            supportFragmentManager.beginTransaction()
+                .replace(binding.fragmentContainerView.id, ThemeSettingsFragment())
+                .commit()
+        }
     }
 }
