@@ -13,6 +13,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.telephony.PhoneStateListener
+import android.telephony.TelephonyManager
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -79,22 +81,23 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     private var longPressDownY = 0f
     private var isLongPressTriggered = false
 
+    // 电话监听
+    private var phoneStateListener: PhoneStateListener? = null
+    private var telephonyManager: TelephonyManager? = null
+
     private val screenStateReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     isScreenOff = true
-                    // 锁屏：隐藏工作台（不销毁）
                     overlayView?.visibility = View.GONE
                     gestureView?.visibility = View.GONE
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     isScreenOff = false
-                    // 解锁：根据横竖屏决定是否显示
                     updateWorkbenchVisibility()
                 }
                 Intent.ACTION_CONFIGURATION_CHANGED -> {
-                    // 屏幕旋转时更新
                     updateWorkbenchVisibility()
                 }
             }
@@ -119,7 +122,39 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         try {
             iconLoader?.getIconForPackage(context, context.packageName)
         } catch (e: Exception) { }
+
+        // 监听电话状态
+        setupPhoneStateListener()
     }
+
+    private fun setupPhoneStateListener() {
+    try {
+        telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        phoneStateListener = object : PhoneStateListener() {
+            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                when (state) {
+                    TelephonyManager.CALL_STATE_IDLE -> {
+                        WorkbenchLogger.log("Workbench", "Phone call ended, restoring workbench")
+                        if (!isScreenOff && !isLandscapeOrientation()) {
+                            show()
+                        }
+                    }
+                    TelephonyManager.CALL_STATE_OFFHOOK -> {
+                        WorkbenchLogger.log("Workbench", "Phone call started")
+                    }
+                    TelephonyManager.CALL_STATE_RINGING -> {
+                        WorkbenchLogger.log("Workbench", "Phone ringing")
+                    }
+                }
+            }
+        }
+        // 使用兼容方式，所有版本都用 listen
+        telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+        WorkbenchLogger.log("Workbench", "Phone state listener registered")
+    } catch (e: Exception) {
+        WorkbenchLogger.logError("Workbench", "Failed to register phone state listener", e)
+    }
+}
 
     private fun isLandscapeOrientation(): Boolean {
         val orientation = context.resources.configuration.orientation
@@ -130,11 +165,9 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         if (isScreenOff) return
 
         if (isLandscapeOrientation()) {
-            // 横屏：隐藏
             overlayView?.visibility = View.GONE
             gestureView?.visibility = View.GONE
         } else {
-            // 竖屏：显示
             if (overlayView != null) {
                 overlayView?.visibility = View.VISIBLE
                 gestureView?.visibility = View.VISIBLE
@@ -168,7 +201,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     fun updateForegroundApp(packageName: String) {
-        // 如果是 LumetroLauncher 自身（主页），清空前台应用标记
         if (packageName == context.packageName) {
             foregroundPackage = ""
             refreshAppContainer()
@@ -178,7 +210,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         if (blacklist.contains(packageName)) return
         if (currentMode != Mode.NORMAL) return
 
-        // 检查是否已冻结
         if (isAppFrozen(packageName)) return
 
         foregroundPackage = packageName
@@ -203,16 +234,13 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
     fun show() {
         if (isLandscapeOrientation()) {
-            // 横屏状态下不显示
             return
         }
         if (isShowing) {
-            // 如果已经显示，确保可见
             overlayView?.visibility = View.VISIBLE
             return
         }
         if (overlayView != null) {
-            // 视图存在但被隐藏，直接显示
             overlayView?.visibility = View.VISIBLE
             isShowing = true
             scrollToStart()
@@ -294,59 +322,54 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     private fun createGestureStrip() {
-    destroyGestureStrip()
+        destroyGestureStrip()
 
-    val stripWidth = prefs.getInt("gesture_strip_width", 6)
-    val stripHeight = prefs.getInt("gesture_strip_height", 0)
-    val stripOffset = prefs.getInt("gesture_strip_offset", 0)
-    val stripAlpha = prefs.getFloat("gesture_strip_alpha", 0.3f)
+        val stripWidth = prefs.getInt("gesture_strip_width", 6)
+        val stripHeight = prefs.getInt("gesture_strip_height", 0)
+        val stripOffset = prefs.getInt("gesture_strip_offset", 0)
+        val stripAlpha = prefs.getFloat("gesture_strip_alpha", 0.3f)
 
-    val h = if (stripHeight > 0) stripHeight.dpToPx() else WindowManager.LayoutParams.MATCH_PARENT
-    val offsetY = stripOffset.dpToPx()
+        val h = if (stripHeight > 0) stripHeight.dpToPx() else WindowManager.LayoutParams.MATCH_PARENT
+        val offsetY = stripOffset.dpToPx()
 
-    // Android 8.0+ 使用 TYPE_APPLICATION_OVERLAY
-    val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-    } else {
-        WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
-    }
+        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else {
+            WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+        }
 
-    gestureParams = WindowManager.LayoutParams(
-        stripWidth.dpToPx(),
-        h,
-        windowType,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-        PixelFormat.TRANSLUCENT
-    ).apply {
-        gravity = Gravity.LEFT or Gravity.TOP
-        x = 0
-        y = offsetY
-        // 设置更高的层级
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // TYPE_APPLICATION_OVERLAY 默认在输入法之上
+        gestureParams = WindowManager.LayoutParams(
+            stripWidth.dpToPx(),
+            h,
+            windowType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.LEFT or Gravity.TOP
+            x = 0
+            y = offsetY
+        }
+
+        gestureView = View(context).apply {
+            setBackgroundColor(((stripAlpha * 255).toInt() shl 24) or 0xFFFFFF)
+            setOnTouchListener { _, event ->
+                handleGestureStrip(event)
+            }
+            isFocusable = false
+            isClickable = false
+            isLongClickable = false
+            setWillNotDraw(true)
+        }
+
+        try {
+            windowManager.addView(gestureView, gestureParams)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
-
-    gestureView = View(context).apply {
-        setBackgroundColor(((stripAlpha * 255).toInt() shl 24) or 0xFFFFFF)
-        setOnTouchListener { _, event ->
-            handleGestureStrip(event)
-        }
-        isFocusable = false
-        isClickable = false
-        isLongClickable = false
-        setWillNotDraw(true)
-    }
-
-    try {
-        windowManager.addView(gestureView, gestureParams)
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
-}
 
     private fun destroyGestureStrip() {
         gestureView?.let {
@@ -500,7 +523,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         topBar.addView(scrollView)
         container.addView(topBar)
 
-        // 点击工作台空白区域复位
         container.setOnClickListener {
             scrollToStart()
         }
@@ -559,11 +581,9 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             }
         }
 
-        // 槽位1：近期应用键
         val slot1View = createSlot1View(slotWidth)
         wrapper.addView(slot1View)
 
-        // 槽位2：当前前台应用
         if (currentMode != Mode.REMOVE) {
             val slot2View = if (foregroundPackage.isNotEmpty() &&
                 !blacklist.contains(foregroundPackage) &&
@@ -582,7 +602,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                     }
                 }
             } else {
-                // foregroundPackage 为空或已被过滤 → 空白占位符
                 createEmptySlot(slotWidth)
             }
             wrapper.addView(slot2View)
@@ -595,7 +614,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             }
         }
 
-        // 槽位3-7：剩余应用
         val remainingApps = when (currentMode) {
             Mode.NORMAL, Mode.ADD -> {
                 displayApps.filter { it.first != foregroundPackage }
@@ -616,7 +634,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
         appContainer.addView(wrapper)
 
-        // 延迟执行滚动，确保视图已经渲染完成
         Handler(Looper.getMainLooper()).postDelayed({
             scrollToStart()
         }, 50)
@@ -786,8 +803,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         }
     }
 
-    // ===== 冻结相关功能 =====
-
     private fun isAppFrozen(pkg: String): Boolean {
         return FreezeManager.isFrozen(context, pkg)
     }
@@ -850,12 +865,9 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         scrollView?.smoothScrollTo(0, 0)
     }
 
-    // ===== 创建应用项 =====
-
     private fun createAppItem(packageName: String, appName: String, isForeground: Boolean, slotWidth: Int): View {
         val isFrozen = isAppFrozen(packageName)
 
-        // 在正常/添加模式下，如果已冻结则不显示
         if (isFrozen && currentMode != Mode.REMOVE) {
             return createEmptySlot(slotWidth)
         }
@@ -887,13 +899,11 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                 }
             }
 
-            // 点击事件 - 正常启动/解冻
             setOnClickListener {
                 when (currentMode) {
                     Mode.NORMAL -> {
                         if (packageName.isNotEmpty()) {
                             if (isFrozen) {
-                                // 如果已冻结，点击解冻
                                 unfreezeApp(packageName, appName)
                             } else {
                                 switchToApp(packageName, appName)
@@ -925,7 +935,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                 }
             }
 
-            // 长按上滑冻结
             setOnTouchListener { view, event ->
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
@@ -981,7 +990,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                         isLongPressTriggered = false
                         longPressPackage = ""
                         longPressName = ""
-                        // 重置背景颜色
                         view.setBackgroundColor(Color.TRANSPARENT)
                         when {
                             isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
@@ -997,7 +1005,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             }
         }
 
-        // 显示应用图标和名称
         if (packageName.isNotEmpty()) {
             val iconSize = if (isForeground) 32.dpToPx() else 28.dpToPx()
 
@@ -1131,12 +1138,13 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     fun isShowing(): Boolean = isShowing
 
     fun cleanup() {
-        try {
-            context.unregisterReceiver(screenStateReceiver)
-        } catch (e: Exception) { }
-        hide()
-        coroutineScope.cancel()
-    }
+    try {
+        context.unregisterReceiver(screenStateReceiver)
+        telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
+    } catch (e: Exception) { }
+    hide()
+    coroutineScope.cancel()
+}
 
     private fun Int.dpToPx(): Int {
         return (this * context.resources.displayMetrics.density).toInt()
