@@ -306,7 +306,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
     // Android 8.0+ 使用 TYPE_APPLICATION_OVERLAY
     val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
     } else {
         WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
     }
