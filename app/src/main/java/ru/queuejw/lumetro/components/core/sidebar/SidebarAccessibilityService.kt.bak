@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.Build
 import android.os.Handler
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -21,6 +22,7 @@ class SidebarAccessibilityService : AccessibilityService() {
         var workbenchOverlay: WorkbenchOverlay? = null
             private set
         private var instance: SidebarAccessibilityService? = null
+        private var isRecovering = false
 
         fun getInstance(): SidebarAccessibilityService? = instance
 
@@ -40,6 +42,8 @@ class SidebarAccessibilityService : AccessibilityService() {
                 workbenchOverlay?.toggle()
             } catch (e: Exception) {
                 Log.e(TAG, "toggleWorkbench error", e)
+                // 如果崩溃，尝试重新创建
+                instance?.recreateWorkbench()
             }
         }
 
@@ -64,6 +68,8 @@ class SidebarAccessibilityService : AccessibilityService() {
                 workbenchOverlay?.updateForegroundApp(packageName)
             } catch (e: Exception) {
                 Log.e(TAG, "updateForegroundApp error", e)
+                // 如果更新失败，尝试重新创建
+                instance?.recreateWorkbench()
             }
         }
 
@@ -72,6 +78,7 @@ class SidebarAccessibilityService : AccessibilityService() {
                 workbenchOverlay?.show()
             } catch (e: Exception) {
                 Log.e(TAG, "showWorkbench error", e)
+                instance?.recreateWorkbench()
             }
         }
 
@@ -82,10 +89,12 @@ class SidebarAccessibilityService : AccessibilityService() {
     private var receiver: BroadcastReceiver? = null
     private var appReceiver: AppReceiver? = null
     private var lastPackage = ""
+    private var isInitialized = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
+        isRecovering = false
         
         try {
             serviceInfo = AccessibilityServiceInfo().apply {
@@ -96,38 +105,90 @@ class SidebarAccessibilityService : AccessibilityService() {
             }
             Log.d(TAG, "Accessibility service connected")
 
-            try {
-                sidebarManager = SidebarManager(this).apply {
-                    Handler().postDelayed({
-                        createGestureStrip()
-                        configureTouchPassthrough()
-                    }, 500)
-                }
-                Log.d(TAG, "Sidebar initialized successfully")
-
-                workbenchOverlay = WorkbenchOverlay(this)
-                Log.d(TAG, "Workbench initialized successfully")
-
-                Handler().postDelayed({
-                    workbenchOverlay?.show()
-                    Log.d(TAG, "Workbench shown")
-                }, 500)
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to init", e)
-            }
-
+            initializeComponents()
             setupReceiver()
             setupAppReceiver()
+            isInitialized = true
             
         } catch (e: Exception) {
             Log.e(TAG, "onServiceConnected error", e)
+            // 延迟重试
+            Handler().postDelayed({
+                if (!isInitialized) {
+                    recreateWorkbench()
+                }
+            }, 2000)
+        }
+    }
+
+    private fun initializeComponents() {
+        try {
+            if (sidebarManager == null) {
+                sidebarManager = SidebarManager(this).apply {
+                    Handler().postDelayed({
+                        try {
+                            createGestureStrip()
+                            configureTouchPassthrough()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Sidebar init error", e)
+                        }
+                    }, 500)
+                }
+                Log.d(TAG, "Sidebar initialized successfully")
+            }
+
+            if (workbenchOverlay == null) {
+                workbenchOverlay = WorkbenchOverlay(this)
+                Log.d(TAG, "Workbench initialized successfully")
+                
+                Handler().postDelayed({
+                    try {
+                        workbenchOverlay?.show()
+                        Log.d(TAG, "Workbench shown")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Workbench show error", e)
+                    }
+                }, 500)
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to init components", e)
+            throw e
+        }
+    }
+
+    private fun recreateWorkbench() {
+        if (isRecovering) return
+        isRecovering = true
+        
+        try {
+            // 清理旧的实例
+            workbenchOverlay?.cleanup()
+            workbenchOverlay = null
+            
+            // 重新创建
+            Handler().postDelayed({
+                try {
+                    workbenchOverlay = WorkbenchOverlay(this)
+                    workbenchOverlay?.show()
+                    Log.d(TAG, "Workbench recreated successfully")
+                    isRecovering = false
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to recreate workbench", e)
+                    isRecovering = false
+                }
+            }, 500)
+        } catch (e: Exception) {
+            Log.e(TAG, "recreateWorkbench error", e)
+            isRecovering = false
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         try {
             if (event == null) return
+            
+            // 捕获异常，防止崩溃
             when (event.eventType) {
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                     try {
@@ -172,18 +233,14 @@ class SidebarAccessibilityService : AccessibilityService() {
                     when (intent?.action) {
                         "ru.queuejw.lumetro.SHOW_PANEL" -> {
                             try {
-                                if (sidebarManager?.isPanelExpanded() == true) {
-                                    sidebarManager?.hidePanel()
-                                } else {
-                                    sidebarManager?.showPanel()
-                                }
+                                sidebarManager?.togglePanel()
                             } catch (e: Exception) {
                                 Log.e(TAG, "SHOW_PANEL error", e)
                             }
                         }
                         "ru.queuejw.lumetro.UPDATE_PANEL_BG" -> {
                             try {
-                                sidebarManager?.showPanel()
+                                sidebarManager?.loadPanelBg()
                             } catch (e: Exception) {
                                 Log.e(TAG, "UPDATE_PANEL_BG error", e)
                             }
@@ -218,16 +275,28 @@ class SidebarAccessibilityService : AccessibilityService() {
 
     private fun setupAppReceiver() {
         try {
-            appReceiver = AppReceiver(
-                { pkg -> sidebarManager?.onAppInstalled(pkg) },
-                { pkg -> sidebarManager?.onAppRemoved(pkg) },
-                {}
-            )
+            appReceiver = AppReceiver { packageName ->
+                try {
+                    lastPackage = packageName
+                    updateForegroundApp(packageName)
+                } catch (e: Exception) {
+                    Log.e(TAG, "AppReceiver error", e)
+                }
+            }
             registerReceiver(appReceiver, IntentFilter(Intent.ACTION_PACKAGE_CHANGED).apply {
                 addDataScheme("package")
             })
         } catch (e: Exception) {
             Log.e(TAG, "setupAppReceiver error", e)
+        }
+    }
+
+    override fun performGlobalAction(action: Int): Boolean {
+        return try {
+            super.performGlobalAction(action)
+        } catch (e: Exception) {
+            Log.e(TAG, "performGlobalAction error", e)
+            false
         }
     }
 }

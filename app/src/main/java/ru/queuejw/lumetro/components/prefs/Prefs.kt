@@ -114,4 +114,9 @@ class Prefs(context: Context) {
     var navBarStyle: Int
         get() = prefs.getInt("nav_bar_style", 0)
         set(value) = prefs.edit { putInt("nav_bar_style", value) }
+
+    // 磁贴锁定
+    var tilesLocked: Boolean
+        get() = prefs.getBoolean("tiles_locked", false)
+        set(value) = prefs.edit { putBoolean("tiles_locked", value) }
 }

@@ -121,63 +121,71 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                startX = event.rawX
-                startY = event.rawY
-                isDragging = false
-                touchCount = event.pointerCount
+    when (event.action) {
+        MotionEvent.ACTION_DOWN -> {
+            startX = event.rawX
+            startY = event.rawY
+            isDragging = false
+            touchCount = event.pointerCount
+        }
+        MotionEvent.ACTION_MOVE -> {
+            val diffX = event.rawX - startX
+            val diffY = event.rawY - startY
+            if (Math.abs(diffX) > 20 || Math.abs(diffY) > 20) {
+                isDragging = true
             }
-            MotionEvent.ACTION_MOVE -> {
-                val diffX = event.rawX - startX
-                val diffY = event.rawY - startY
-                if (Math.abs(diffX) > 20 || Math.abs(diffY) > 20) {
-                    isDragging = true
-                }
-            }
-            MotionEvent.ACTION_UP -> {
-                val diffX = event.rawX - startX
-                val diffY = event.rawY - startY
-                val absDiffX = Math.abs(diffX)
-                val absDiffY = Math.abs(diffY)
+        }
+        MotionEvent.ACTION_UP -> {
+            val diffX = event.rawX - startX
+            val diffY = event.rawY - startY
+            val absDiffX = Math.abs(diffX)
+            val absDiffY = Math.abs(diffY)
 
-                if (!isDragging) {
+            if (!isDragging) {
+                return true
+            }
+
+            val isHorizontal = absDiffX > absDiffY
+            val isVertical = absDiffY > absDiffX
+
+            // 双指手势
+            if (touchCount >= 2) {
+                if (isVertical && (diffY > 80 || diffY < -80)) {
                     return true
                 }
+            }
 
-                val isHorizontal = absDiffX > absDiffY
-                val isVertical = absDiffY > absDiffX
-
-                // 双指手势
-                if (touchCount >= 2) {
-                    if (isVertical && (diffY > 80 || diffY < -80)) {
-                        toggleWorkbench()
-                        return true
+            // 单指手势
+            when {
+                // 左滑 → 展开/关闭侧边栏
+                isHorizontal && diffX < -80 -> {
+                    val manager = SidebarAccessibilityService.sidebarManager
+                    if (manager != null) {
+                        if (manager.isPanelExpanded()) {
+                            manager.hidePanel()
+                        } else {
+                            manager.showPanel()
+                        }
                     }
+                    return true
                 }
-
-                // 单指手势
-                when {
-                    // 左滑 → 展开侧边栏
-                    isHorizontal && diffX < -80 -> {
-                        sendBroadcast(Intent("ru.queuejw.lumetro.SHOW_PANEL"))
-                        return true
-                    }
-                    // 上滑 → 打开工作台
-                    isVertical && diffY < -80 -> {
-                        toggleWorkbench()
-                        return true
-                    }
-                    // 下滑 → 展开通知
-                    isVertical && diffY > 80 -> {
-                        sendBroadcast(Intent("ru.queuejw.lumetro.EXPAND_NOTIFICATION"))
-                        return true
-                    }
+                // 上滑 → 不触发工作台
+                isVertical && diffY < -80 -> {
+                    return true
+                }
+                // 下滑 → 展开通知
+                isVertical && diffY > 80 -> {
+                    // 直接通过无障碍服务展开通知
+                    SidebarAccessibilityService.getInstance()?.performGlobalAction(
+                        android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
+                    )
+                    return true
                 }
             }
         }
-        return super.onTouchEvent(event)
     }
+    return super.onTouchEvent(event)
+}
 
     override fun onDestroy() {
         super.onDestroy()

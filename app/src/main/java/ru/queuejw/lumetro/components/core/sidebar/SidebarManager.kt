@@ -56,9 +56,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import ru.queuejw.lumetro.components.core.AppManager
 import ru.queuejw.lumetro.components.core.db.tile.TileDatabase
 import ru.queuejw.lumetro.components.core.icons.IconLoader
+import ru.queuejw.lumetro.components.core.AppManager
 import ru.queuejw.lumetro.components.core.icons.IconPackManager
 import ru.queuejw.lumetro.components.freeze.FreezeManager
 import ru.queuejw.lumetro.components.freeze.ShizukuHelper
@@ -120,8 +120,9 @@ class SidebarManager(private val context: Context) {
 
     private var db: TileDatabase? = null
     private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var isEditMode = false
     private val packageManager = context.packageManager
-    private val appManager = AppManager()
+    private val appManager = AppManager
     private val prefs = Prefs(context)
     var iconLoader = IconLoader(prefs.iconPackPackage != null, prefs.iconPackPackage)
     private val collator by lazy { Collator.getInstance(Locale.CHINESE) }
@@ -360,30 +361,62 @@ class SidebarManager(private val context: Context) {
 private fun setupDragAndDrop() {
     itemTouchHelper?.attachToRecyclerView(null)
     itemTouchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
-        override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder) = makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT, 0)
-        override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
-            val fp = vh.bindingAdapterPosition; val tp = t.bindingAdapterPosition
-            if (isFrozen(cachedTiles[fp]) || isFrozen(cachedTiles[tp])) return false
-            if (fp < tp) for (i in fp until tp) Collections.swap(cachedTiles, i, i + 1) else for (i in fp downTo tp + 1) Collections.swap(cachedTiles, i, i - 1)
-            tileAdapter?.notifyItemMoved(fp, tp); return true
+    override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
+        // 锁定或非编辑模式 → 禁止拖动
+        if (prefs.tilesLocked || !isEditMode) {
+            return makeMovementFlags(0, 0)
         }
-        override fun onSwiped(vh: RecyclerView.ViewHolder, d: Int) {}
-        override fun isLongPressDragEnabled() = true
-        override fun clearView(rv: RecyclerView, vh: RecyclerView.ViewHolder) {
-    super.clearView(rv, vh)
-    coroutineScope.launch(Dispatchers.IO) {
-        val dao = db?.getTilesDao(); val all = dao?.getTilesData()?.toMutableList() ?: return@launch
-        cachedTiles.forEachIndexed { i, t -> all.indexOfFirst { it.id == t.id }.takeIf { it >= 0 }?.let { all[it].tilePosition = i } }
-        val normal = all.filter { it.tileType >= 0 }.toMutableList()
-        val special = all.filter { it.tileType < 0 }
-        normal.sortBy { it.tilePosition }
-        val merged = special + normal
-        normal.forEachIndexed { i, t -> t.tilePosition = i }
-special.forEachIndexed { i, t -> t.tilePosition = -(i + 1) }
-        dao.updateAllTiles(merged)
+        return makeMovementFlags(
+            ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
+            0
+        )
     }
-}
-    })
+
+    override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
+        // 锁定或非编辑模式 → 禁止移动
+        if (prefs.tilesLocked || !isEditMode) return false
+
+        val fp = vh.bindingAdapterPosition
+        val tp = t.bindingAdapterPosition
+        if (isFrozen(cachedTiles[fp]) || isFrozen(cachedTiles[tp])) return false
+        if (fp < tp) {
+            for (i in fp until tp) Collections.swap(cachedTiles, i, i + 1)
+        } else {
+            for (i in fp downTo tp + 1) Collections.swap(cachedTiles, i, i - 1)
+        }
+        tileAdapter?.notifyItemMoved(fp, tp)
+        return true
+    }
+
+    override fun onSwiped(vh: RecyclerView.ViewHolder, d: Int) {}
+
+    override fun isLongPressDragEnabled(): Boolean {
+        // 锁定或非编辑模式 → 禁止长按拖动
+        return !prefs.tilesLocked && isEditMode
+    }
+
+    override fun clearView(rv: RecyclerView, vh: RecyclerView.ViewHolder) {
+        super.clearView(rv, vh)
+        // 只有非锁定状态才保存
+        if (prefs.tilesLocked) return
+        coroutineScope.launch(Dispatchers.IO) {
+            val dao = db?.getTilesDao()
+            val all = dao?.getTilesData()?.toMutableList() ?: return@launch
+            cachedTiles.forEachIndexed { i, t ->
+                all.indexOfFirst { it.id == t.id }.takeIf { it >= 0 }?.let {
+                    all[it].tilePosition = i
+                }
+            }
+            val normal = all.filter { it.tileType >= 0 }.toMutableList()
+            val special = all.filter { it.tileType < 0 }
+            normal.sortBy { it.tilePosition }
+            val merged = special + normal
+            normal.forEachIndexed { i, t -> t.tilePosition = i }
+            special.forEachIndexed { i, t -> t.tilePosition = -(i + 1) }
+            dao.updateAllTiles(merged)
+        }
+    }
+})
     itemTouchHelper?.attachToRecyclerView(tilesRecyclerView)
 }
 
@@ -410,6 +443,8 @@ fun refreshPanelBackground() {
 }
 
 fun refreshTilesIfNeeded() {
+    // 锁定状态下禁止刷新时重新添加
+    if (prefs.tilesLocked) return
     coroutineScope.launch(Dispatchers.IO) {
         val all = db?.getTilesDao()?.getTilesData() ?: return@launch
         val validTiles = all.filter { it.tileType != -1 }
@@ -425,25 +460,35 @@ fun refreshTilesIfNeeded() {
 }
 
 fun onAppInstalled(pkg: String) {
+    // 锁定状态下禁止自动添加
+    if (prefs.tilesLocked) return
     if (!prefs.autoPinEnabled) return
     coroutineScope.launch(Dispatchers.IO) {
-        val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
+        val dao = db?.getTilesDao()
+        val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
         val slot = tiles.indexOfFirst { it.tileType == -1 }
         if (slot >= 0) {
-        if (tiles.any { it.tilePackage == pkg && it.tileType != -1 }) return@launch
+            if (tiles.any { it.tilePackage == pkg && it.tileType != -1 }) return@launch
             try {
                 val appInfo = packageManager.getApplicationInfo(pkg, 0)
                 val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
                 if (packageManager.queryIntentActivities(intent, 0).isEmpty()) return@launch
                 val name = packageManager.getApplicationLabel(appInfo).toString()
-                tiles[slot] = TileEntity(tiles[slot].id, slot, null, -1, 0, 0, name, pkg)
-                dao.updateAllTiles(tiles); withContext(Dispatchers.Main) { refreshTilesIfNeeded() }
-            } catch (ex: Exception) { }
+                tiles[slot] = TileEntity(tiles[slot].id, slot, null, 0, 2, 0, name, pkg)
+                dao.updateAllTiles(tiles)
+                withContext(Dispatchers.Main) {
+                    refreshTilesIfNeeded()
+                }
+            } catch (e: Exception) {
+                // 忽略
+            }
         }
     }
 }
 
 fun onAppRemoved(pkg: String) {
+    // 锁定状态下禁止移除磁贴
+    if (prefs.tilesLocked) return
     coroutineScope.launch(Dispatchers.IO) {
         val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
         tiles.indexOfFirst { it.tilePackage == pkg }.takeIf { it >= 0 }?.let { idx ->
@@ -678,6 +723,11 @@ private fun tv(text: String, click: () -> Unit) = TextView(context).apply { this
 private fun isFrozen(t: TileEntity) = (context.getSharedPreferences("tile_settings", Context.MODE_PRIVATE).getStringSet("frozen_tiles", emptySet()) ?: emptySet()).contains(t.id.toString())
 
 private fun unpinTile(t: TileEntity) {
+    // 锁定状态下禁止删除磁贴
+    if (prefs.tilesLocked) {
+        Toast.makeText(context, "磁贴已锁定，无法删除", Toast.LENGTH_SHORT).show()
+        return
+    }
     coroutineScope.launch(Dispatchers.IO) {
         val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
         tiles.indexOfFirst { it.id == t.id }.takeIf { it >= 0 }?.let { idx ->
@@ -775,6 +825,34 @@ private fun showPanelBgDialog() {
     content.addView(TextView(context).apply { text = "手势条透明度"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
     val stripAlphaSlider = SeekBar(context).apply { max = 100; progress = (prefs.gestureStripAlpha * 100).toInt() }
     content.addView(stripAlphaSlider)
+    
+    // 锁定磁贴
+    val lockLayout = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, 12, 0, 12)
+    }
+    val lockLabel = TextView(context).apply {
+        text = "锁定磁贴布局"
+        setTextColor(Color.WHITE)
+        textSize = 14f
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+    }
+    lockLayout.addView(lockLabel)
+
+    val lockSwitch = android.widget.Switch(context).apply {
+        isChecked = prefs.tilesLocked
+        setOnCheckedChangeListener { _, isChecked ->
+            prefs.tilesLocked = isChecked
+            // 锁定后禁用自动固定
+            if (isChecked) {
+                prefs.autoPinEnabled = false
+            }
+            Toast.makeText(context, if (isChecked) "磁贴已锁定，禁止添加/删除" else "磁贴已解锁", Toast.LENGTH_SHORT).show()
+        }
+    }
+    lockLayout.addView(lockSwitch)
+    content.addView(lockLayout)
 
     content.addView(android.widget.Button(context).apply {
         text = "选择图标包"
@@ -1327,6 +1405,11 @@ appAdapter = AppListAdapter(appList)
 
     private fun pinApp(a: App) {
     val pkg = a.mPackage ?: return
+    // 锁定状态下禁止固定应用
+    if (prefs.tilesLocked) {
+        Toast.makeText(context, "磁贴已锁定，无法固定", Toast.LENGTH_SHORT).show()
+        return
+    }
     coroutineScope.launch(Dispatchers.IO) {
         val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
         // 检查是否已固定，避免重复

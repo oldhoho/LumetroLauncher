@@ -1,0 +1,20 @@
+{
+  "allFiles": [
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/freeform/WorkbenchOverlay.kt",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 11711,
+          "line": 348
+        },
+        "start": {
+          "column": 1,
+          "index": 11711,
+          "line": 348
+        }
+      }
+    }
+  ],
+  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/freeform/WorkbenchOverlay.kt"
+}

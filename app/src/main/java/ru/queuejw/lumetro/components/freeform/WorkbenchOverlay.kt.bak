@@ -830,76 +830,107 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         }
 
         // 长按上滑冻结
-        setOnTouchListener { view, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    if (packageName.isNotEmpty()) {
-                        longPressPackage = packageName
-                        longPressName = appName
-                        longPressDownY = event.rawY
-                        isLongPressTriggered = false
-                        
-                        val runnable = Runnable {
-                            isLongPressTriggered = true
-                            try {
-                                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    vibrator.vibrate(VibrationEffect.createOneShot(30, 50))
-                                } else {
-                                    vibrator.vibrate(30)
-                                }
-                            } catch (e: Exception) { }
-                            
-                            val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
-                            Toast.makeText(context, "$actionText $appName", Toast.LENGTH_SHORT).show()
-                            view.setBackgroundColor(Color.parseColor("#44FFAA00"))
-                        }
-                        longPressRunnable = runnable
-                        Handler(Looper.getMainLooper()).postDelayed(runnable, 500)
-                    }
-                    false
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (isLongPressTriggered && longPressPackage.isNotEmpty()) {
-                        val dy = longPressDownY - event.rawY
-                        if (dy > 60) {
-                            Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
-                            longPressRunnable = null
-                            
-                            if (isFrozen) {
-                                unfreezeApp(packageName, appName)
+        // 长按上滑冻结
+setOnTouchListener { view, event ->
+    when (event.action) {
+        MotionEvent.ACTION_DOWN -> {
+            if (packageName.isNotEmpty()) {
+                longPressPackage = packageName
+                longPressName = appName
+                longPressDownY = event.rawY
+                isLongPressTriggered = false
+                
+                val runnable = Runnable {
+                    // 只有在没有被取消的情况下才执行
+                    if (longPressRunnable != null) {
+                        isLongPressTriggered = true
+                        try {
+                            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                vibrator.vibrate(VibrationEffect.createOneShot(30, 50))
                             } else {
-                                freezeApp(packageName, appName)
+                                vibrator.vibrate(30)
                             }
-                            
-                            isLongPressTriggered = false
-                            longPressPackage = ""
-                            longPressName = ""
-                            return@setOnTouchListener true
-                        }
+                        } catch (e: Exception) { }
+                        
+                        val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
+                        Toast.makeText(context, "$actionText $appName", Toast.LENGTH_SHORT).show()
+                        view.setBackgroundColor(Color.parseColor("#44FFAA00"))
                     }
-                    false
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                longPressRunnable = runnable
+                Handler(Looper.getMainLooper()).postDelayed(runnable, 500)
+            }
+            false
+        }
+        
+        MotionEvent.ACTION_MOVE -> {
+            // 如果移动距离过大，说明是滑动不是长按，取消长按回调
+            val dy = longPressDownY - event.rawY
+            if (Math.abs(dy) > 30 && !isLongPressTriggered) {
+                // 快速滑动，取消长按
+                Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
+                longPressRunnable = null
+                isLongPressTriggered = false
+                longPressPackage = ""
+                longPressName = ""
+                // 如果背景被改变了，恢复
+                view.setBackgroundColor(Color.TRANSPARENT)
+                when {
+                    isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
+                    currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                    currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
+                    isForeground -> view.setBackgroundColor(Color.parseColor("#44FFFFFF"))
+                    else -> view.setBackgroundColor(Color.TRANSPARENT)
+                }
+                return@setOnTouchListener false
+            }
+            
+            // 只有触发了长按后才处理上滑冻结
+            if (isLongPressTriggered && longPressPackage.isNotEmpty()) {
+                if (dy > 60) {
                     Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
                     longPressRunnable = null
+                    
+                    if (isFrozen) {
+                        unfreezeApp(packageName, appName)
+                    } else {
+                        freezeApp(packageName, appName)
+                    }
+                    
                     isLongPressTriggered = false
                     longPressPackage = ""
                     longPressName = ""
-                    // 重置背景颜色
-                    view.setBackgroundColor(Color.TRANSPARENT)
-                    when {
-                        isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
-                        currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
-                        currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
-                        isForeground -> view.setBackgroundColor(Color.parseColor("#44FFFFFF"))
-                        else -> view.setBackgroundColor(Color.TRANSPARENT)
-                    }
-                    false
+                    return@setOnTouchListener true
                 }
-                else -> false
             }
+            false
         }
+        
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            // 取消所有回调
+            Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
+            longPressRunnable = null
+            
+            if (isLongPressTriggered) {
+                when {
+                    isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
+                    currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                    currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
+                    isForeground -> view.setBackgroundColor(Color.parseColor("#44FFFFFF"))
+                    else -> view.setBackgroundColor(Color.TRANSPARENT)
+                }
+            }
+            
+            isLongPressTriggered = false
+            longPressPackage = ""
+            longPressName = ""
+            false
+        }
+        
+        else -> false
+    }
+}
     }
 
     // 显示应用图标和名称

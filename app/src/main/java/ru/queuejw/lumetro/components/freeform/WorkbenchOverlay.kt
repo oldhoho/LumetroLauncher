@@ -32,6 +32,7 @@ import ru.queuejw.lumetro.components.freeform.helper.FreeformHackHelper
 import ru.queuejw.lumetro.components.freeform.util.U
 import ru.queuejw.lumetro.components.freeze.FreezeManager
 import ru.queuejw.lumetro.components.freeze.ShizukuHelper
+import ru.queuejw.lumetro.utils.WorkbenchLogger
 
 class WorkbenchOverlay(private val service: AccessibilityService) {
 
@@ -42,6 +43,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     private var isScreenOff = false
     private var barHeight = 0
     private val appContainer = LinearLayout(context)
+    private var scrollView: HorizontalScrollView? = null
     private var isContainerInitialized = false
 
     private val MAX_SLOTS = 7
@@ -82,16 +84,18 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     isScreenOff = true
-                    if (isShowing) hide()
+                    // 锁屏：隐藏工作台（不销毁）
+                    overlayView?.visibility = View.GONE
+                    gestureView?.visibility = View.GONE
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     isScreenOff = false
-                    if (isShowing) {
-                        hide()
-                        show()
-                    } else {
-                        show()
-                    }
+                    // 解锁：根据横竖屏决定是否显示
+                    updateWorkbenchVisibility()
+                }
+                Intent.ACTION_CONFIGURATION_CHANGED -> {
+                    // 屏幕旋转时更新
+                    updateWorkbenchVisibility()
                 }
             }
         }
@@ -101,8 +105,12 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         val filter = android.content.IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_CONFIGURATION_CHANGED)
         }
         context.registerReceiver(screenStateReceiver, filter)
+
+        WorkbenchLogger.init(context)
+        WorkbenchLogger.log("Workbench", "=== Workbench initialized ===")
 
         loadBlacklist()
         initSlots()
@@ -111,6 +119,30 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         try {
             iconLoader?.getIconForPackage(context, context.packageName)
         } catch (e: Exception) { }
+    }
+
+    private fun isLandscapeOrientation(): Boolean {
+        val orientation = context.resources.configuration.orientation
+        return orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    }
+
+    private fun updateWorkbenchVisibility() {
+        if (isScreenOff) return
+
+        if (isLandscapeOrientation()) {
+            // 横屏：隐藏
+            overlayView?.visibility = View.GONE
+            gestureView?.visibility = View.GONE
+        } else {
+            // 竖屏：显示
+            if (overlayView != null) {
+                overlayView?.visibility = View.VISIBLE
+                gestureView?.visibility = View.VISIBLE
+                refreshAppContainer()
+            } else {
+                show()
+            }
+        }
     }
 
     private fun loadBlacklist() {
@@ -136,12 +168,18 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     fun updateForegroundApp(packageName: String) {
-        if (packageName == context.packageName) return
+        // 如果是 LumetroLauncher 自身（主页），清空前台应用标记
+        if (packageName == context.packageName) {
+            foregroundPackage = ""
+            refreshAppContainer()
+            return
+        }
+
         if (blacklist.contains(packageName)) return
-        
+        if (currentMode != Mode.NORMAL) return
+
         // 检查是否已冻结
         if (isAppFrozen(packageName)) return
-        if (currentMode != Mode.NORMAL) return
 
         foregroundPackage = packageName
 
@@ -164,8 +202,22 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     fun show() {
-        if (isShowing) return
-        if (overlayView != null) return
+        if (isLandscapeOrientation()) {
+            // 横屏状态下不显示
+            return
+        }
+        if (isShowing) {
+            // 如果已经显示，确保可见
+            overlayView?.visibility = View.VISIBLE
+            return
+        }
+        if (overlayView != null) {
+            // 视图存在但被隐藏，直接显示
+            overlayView?.visibility = View.VISIBLE
+            isShowing = true
+            scrollToStart()
+            return
+        }
         if (isScreenOff) return
 
         activateFreeformMode()
@@ -203,7 +255,10 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         try {
             windowManager.addView(container, params)
             isShowing = true
+            scrollToStart()
+            WorkbenchLogger.log("Workbench", "show() - success")
         } catch (e: Exception) {
+            WorkbenchLogger.logError("Workbench", "show() - failed", e)
             e.printStackTrace()
         }
 
@@ -239,53 +294,59 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     private fun createGestureStrip() {
-        destroyGestureStrip()
+    destroyGestureStrip()
 
-        val stripWidth = prefs.getInt("gesture_strip_width", 6)
-        val stripHeight = prefs.getInt("gesture_strip_height", 0)
-        val stripOffset = prefs.getInt("gesture_strip_offset", 0)
-        val stripAlpha = prefs.getFloat("gesture_strip_alpha", 0.3f)
+    val stripWidth = prefs.getInt("gesture_strip_width", 6)
+    val stripHeight = prefs.getInt("gesture_strip_height", 0)
+    val stripOffset = prefs.getInt("gesture_strip_offset", 0)
+    val stripAlpha = prefs.getFloat("gesture_strip_alpha", 0.3f)
 
-        val h = if (stripHeight > 0) stripHeight.dpToPx() else WindowManager.LayoutParams.MATCH_PARENT
-        val offsetY = stripOffset.dpToPx()
+    val h = if (stripHeight > 0) stripHeight.dpToPx() else WindowManager.LayoutParams.MATCH_PARENT
+    val offsetY = stripOffset.dpToPx()
 
-        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        } else {
-            WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
-        }
+    // Android 8.0+ 使用 TYPE_APPLICATION_OVERLAY
+    val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+    } else {
+        WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+    }
 
-        gestureParams = WindowManager.LayoutParams(
-            stripWidth.dpToPx(),
-            h,
-            windowType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.LEFT or Gravity.TOP
-            x = 0
-            y = offsetY
-        }
-
-        gestureView = View(context).apply {
-            setBackgroundColor(((stripAlpha * 255).toInt() shl 24) or 0xFFFFFF)
-            setOnTouchListener { _, event ->
-                handleGestureStrip(event)
-            }
-            isFocusable = false
-            isClickable = false
-            isLongClickable = false
-            setWillNotDraw(true)
-        }
-
-        try {
-            windowManager.addView(gestureView, gestureParams)
-        } catch (e: Exception) {
-            e.printStackTrace()
+    gestureParams = WindowManager.LayoutParams(
+        stripWidth.dpToPx(),
+        h,
+        windowType,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+        PixelFormat.TRANSLUCENT
+    ).apply {
+        gravity = Gravity.LEFT or Gravity.TOP
+        x = 0
+        y = offsetY
+        // 设置更高的层级
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // TYPE_APPLICATION_OVERLAY 默认在输入法之上
         }
     }
+
+    gestureView = View(context).apply {
+        setBackgroundColor(((stripAlpha * 255).toInt() shl 24) or 0xFFFFFF)
+        setOnTouchListener { _, event ->
+            handleGestureStrip(event)
+        }
+        isFocusable = false
+        isClickable = false
+        isLongClickable = false
+        setWillNotDraw(true)
+    }
+
+    try {
+        windowManager.addView(gestureView, gestureParams)
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+}
 
     private fun destroyGestureStrip() {
         gestureView?.let {
@@ -389,6 +450,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
         val container = SwipeFrameLayout(context) {
             performHome()
+            scrollToStart()
         }.apply {
             setBackgroundColor(Color.parseColor("#FF1A1A1A"))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -417,7 +479,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             )
         }
 
-        val scrollView = HorizontalScrollView(context).apply {
+        scrollView = HorizontalScrollView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
@@ -434,9 +496,14 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
         appContainer.gravity = Gravity.CENTER
 
-        scrollView.addView(appContainer)
+        scrollView?.addView(appContainer)
         topBar.addView(scrollView)
         container.addView(topBar)
+
+        // 点击工作台空白区域复位
+        container.setOnClickListener {
+            scrollToStart()
+        }
 
         return container
     }
@@ -472,7 +539,11 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
         val displayApps = when (currentMode) {
             Mode.NORMAL, Mode.ADD -> {
-                appSlots.filter { it.first.isNotEmpty() && !blacklist.contains(it.first) && !isAppFrozen(it.first) }
+                appSlots.filter {
+                    it.first.isNotEmpty() &&
+                            !blacklist.contains(it.first) &&
+                            !isAppFrozen(it.first)
+                }
             }
             Mode.REMOVE -> {
                 blacklist.map { pkg ->
@@ -494,7 +565,9 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
         // 槽位2：当前前台应用
         if (currentMode != Mode.REMOVE) {
-            val slot2View = if (foregroundPackage.isNotEmpty() && !blacklist.contains(foregroundPackage)) {
+            val slot2View = if (foregroundPackage.isNotEmpty() &&
+                !blacklist.contains(foregroundPackage) &&
+                !isAppFrozen(foregroundPackage)) {
                 val appInfo = displayApps.find { it.first == foregroundPackage }
                 if (appInfo != null) {
                     createAppItem(appInfo.first, appInfo.second, true, slotWidth)
@@ -509,6 +582,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                     }
                 }
             } else {
+                // foregroundPackage 为空或已被过滤 → 空白占位符
                 createEmptySlot(slotWidth)
             }
             wrapper.addView(slot2View)
@@ -541,6 +615,11 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         }
 
         appContainer.addView(wrapper)
+
+        // 延迟执行滚动，确保视图已经渲染完成
+        Handler(Looper.getMainLooper()).postDelayed({
+            scrollToStart()
+        }, 50)
     }
 
     private fun createSlot1View(slotWidth: Int): View {
@@ -552,7 +631,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                 slotWidth,
                 LinearLayout.LayoutParams.MATCH_PARENT
             )
-            
+
             when (currentMode) {
                 Mode.NORMAL -> setBackgroundColor(Color.TRANSPARENT)
                 Mode.ADD -> setBackgroundColor(Color.parseColor("#22FFFFFF"))
@@ -564,6 +643,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                     Mode.NORMAL -> {
                         try {
                             SidebarAccessibilityService.getInstance()?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+                            scrollToStart()
                         } catch (e: Exception) {
                             Toast.makeText(context, "无法打开近期任务", Toast.LENGTH_SHORT).show()
                         }
@@ -571,11 +651,13 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                     Mode.ADD -> {
                         currentMode = Mode.NORMAL
                         refreshAppContainer()
+                        scrollToStart()
                         Toast.makeText(context, "退出添加模式", Toast.LENGTH_SHORT).show()
                     }
                     Mode.REMOVE -> {
                         currentMode = Mode.NORMAL
                         refreshAppContainer()
+                        scrollToStart()
                         Toast.makeText(context, "退出移除模式", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -586,12 +668,14 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                     Mode.NORMAL -> {
                         currentMode = Mode.ADD
                         refreshAppContainer()
+                        scrollToStart()
                         Toast.makeText(context, "添加模式（点击应用加入黑名单）", Toast.LENGTH_SHORT).show()
                         true
                     }
                     Mode.ADD -> {
                         currentMode = Mode.REMOVE
                         refreshAppContainer()
+                        scrollToStart()
                         Toast.makeText(context, "移除模式（点击移除黑名单）", Toast.LENGTH_SHORT).show()
                         true
                     }
@@ -604,7 +688,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             Mode.NORMAL -> {
                 val iconView = createWindowsIcon()
                 item.addView(iconView)
-                
+
                 val nameView = TextView(context).apply {
                     text = "最近"
                     textSize = 7f
@@ -631,7 +715,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                     )
                 }
                 item.addView(iconView)
-                
+
                 val nameView = TextView(context).apply {
                     text = "添加"
                     textSize = 7f
@@ -658,7 +742,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                     )
                 }
                 item.addView(iconView)
-                
+
                 val nameView = TextView(context).apply {
                     text = "退出"
                     textSize = 7f
@@ -703,7 +787,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     // ===== 冻结相关功能 =====
-    
+
     private fun isAppFrozen(pkg: String): Boolean {
         return FreezeManager.isFrozen(context, pkg)
     }
@@ -762,215 +846,195 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
         }
     }
 
+    private fun scrollToStart() {
+        scrollView?.smoothScrollTo(0, 0)
+    }
+
     // ===== 创建应用项 =====
 
     private fun createAppItem(packageName: String, appName: String, isForeground: Boolean, slotWidth: Int): View {
-    val isFrozen = isAppFrozen(packageName)
-    
-    val item = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER
-        setPadding(0, 0, 0, 0)
-        layoutParams = LinearLayout.LayoutParams(
-            slotWidth,
-            LinearLayout.LayoutParams.MATCH_PARENT
-        )
+        val isFrozen = isAppFrozen(packageName)
 
-        when {
-            isFrozen -> {
-                setBackgroundColor(Color.parseColor("#33AADDFF"))
-            }
-            currentMode == Mode.ADD && !blacklist.contains(packageName) -> {
-                setBackgroundColor(Color.parseColor("#22FFFFFF"))
-            }
-            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> {
-                setBackgroundColor(Color.parseColor("#33FF4444"))
-            }
-            isForeground -> {
-                setBackgroundColor(Color.parseColor("#44FFFFFF"))
-            }
-            else -> {
-                setBackgroundColor(Color.TRANSPARENT)
-            }
+        // 在正常/添加模式下，如果已冻结则不显示
+        if (isFrozen && currentMode != Mode.REMOVE) {
+            return createEmptySlot(slotWidth)
         }
 
-        // 点击事件 - 正常启动/解冻
-        setOnClickListener {
-            when (currentMode) {
-                Mode.NORMAL -> {
-                    if (packageName.isNotEmpty()) {
-                        if (isFrozen) {
-                            // 如果已冻结，点击解冻
-                            unfreezeApp(packageName, appName)
-                        } else {
-                            switchToApp(packageName, appName)
+        val item = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                slotWidth,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+
+            when {
+                isFrozen -> {
+                    setBackgroundColor(Color.parseColor("#33AADDFF"))
+                }
+                currentMode == Mode.ADD && !blacklist.contains(packageName) -> {
+                    setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                }
+                currentMode == Mode.REMOVE && blacklist.contains(packageName) -> {
+                    setBackgroundColor(Color.parseColor("#33FF4444"))
+                }
+                isForeground -> {
+                    setBackgroundColor(Color.parseColor("#44FFAA00"))
+                }
+                else -> {
+                    setBackgroundColor(Color.TRANSPARENT)
+                }
+            }
+
+            // 点击事件 - 正常启动/解冻
+            setOnClickListener {
+                when (currentMode) {
+                    Mode.NORMAL -> {
+                        if (packageName.isNotEmpty()) {
+                            if (isFrozen) {
+                                // 如果已冻结，点击解冻
+                                unfreezeApp(packageName, appName)
+                            } else {
+                                switchToApp(packageName, appName)
+                                scrollToStart()
+                            }
+                        }
+                    }
+                    Mode.ADD -> {
+                        if (packageName.isNotEmpty() && !blacklist.contains(packageName)) {
+                            blacklist.add(packageName)
+                            saveBlacklist()
+                            appSlots.removeAll { it.first == packageName }
+                            refreshAppContainer()
+                            scrollToStart()
+                            Toast.makeText(context, "已屏蔽 $appName", Toast.LENGTH_SHORT).show()
+                        } else if (blacklist.contains(packageName)) {
+                            Toast.makeText(context, "$appName 已在黑名单中", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    Mode.REMOVE -> {
+                        if (packageName.isNotEmpty() && blacklist.contains(packageName)) {
+                            blacklist.remove(packageName)
+                            saveBlacklist()
+                            refreshAppContainer()
+                            scrollToStart()
+                            Toast.makeText(context, "已移除 $appName", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
-                Mode.ADD -> {
-                    if (packageName.isNotEmpty() && !blacklist.contains(packageName)) {
-                        blacklist.add(packageName)
-                        saveBlacklist()
-                        appSlots.removeAll { it.first == packageName }
-                        refreshAppContainer()
-                        Toast.makeText(context, "已屏蔽 $appName", Toast.LENGTH_SHORT).show()
-                    } else if (blacklist.contains(packageName)) {
-                        Toast.makeText(context, "$appName 已在黑名单中", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                Mode.REMOVE -> {
-                    if (packageName.isNotEmpty() && blacklist.contains(packageName)) {
-                        blacklist.remove(packageName)
-                        saveBlacklist()
-                        refreshAppContainer()
-                        Toast.makeText(context, "已移除 $appName", Toast.LENGTH_SHORT).show()
-                    }
-                }
             }
-        }
 
-        // 长按上滑冻结
-        // 长按上滑冻结
-setOnTouchListener { view, event ->
-    when (event.action) {
-        MotionEvent.ACTION_DOWN -> {
-            if (packageName.isNotEmpty()) {
-                longPressPackage = packageName
-                longPressName = appName
-                longPressDownY = event.rawY
-                isLongPressTriggered = false
-                
-                val runnable = Runnable {
-                    // 只有在没有被取消的情况下才执行
-                    if (longPressRunnable != null) {
-                        isLongPressTriggered = true
-                        try {
-                            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                vibrator.vibrate(VibrationEffect.createOneShot(30, 50))
-                            } else {
-                                vibrator.vibrate(30)
+            // 长按上滑冻结
+            setOnTouchListener { view, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        if (packageName.isNotEmpty()) {
+                            longPressPackage = packageName
+                            longPressName = appName
+                            longPressDownY = event.rawY
+                            isLongPressTriggered = false
+
+                            val runnable = Runnable {
+                                isLongPressTriggered = true
+                                try {
+                                    val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                        vibrator.vibrate(VibrationEffect.createOneShot(30, 50))
+                                    } else {
+                                        vibrator.vibrate(30)
+                                    }
+                                } catch (e: Exception) { }
+
+                                val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
+                                Toast.makeText(context, "$actionText $appName", Toast.LENGTH_SHORT).show()
                             }
-                        } catch (e: Exception) { }
-                        
-                        val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
-                        Toast.makeText(context, "$actionText $appName", Toast.LENGTH_SHORT).show()
-                        view.setBackgroundColor(Color.parseColor("#44FFAA00"))
+                            longPressRunnable = runnable
+                            Handler(Looper.getMainLooper()).postDelayed(runnable, 1000)
+                        }
+                        false
                     }
-                }
-                longPressRunnable = runnable
-                Handler(Looper.getMainLooper()).postDelayed(runnable, 500)
-            }
-            false
-        }
-        
-        MotionEvent.ACTION_MOVE -> {
-            // 如果移动距离过大，说明是滑动不是长按，取消长按回调
-            val dy = longPressDownY - event.rawY
-            if (Math.abs(dy) > 30 && !isLongPressTriggered) {
-                // 快速滑动，取消长按
-                Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
-                longPressRunnable = null
-                isLongPressTriggered = false
-                longPressPackage = ""
-                longPressName = ""
-                // 如果背景被改变了，恢复
-                view.setBackgroundColor(Color.TRANSPARENT)
-                when {
-                    isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
-                    currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
-                    currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
-                    isForeground -> view.setBackgroundColor(Color.parseColor("#44FFFFFF"))
-                    else -> view.setBackgroundColor(Color.TRANSPARENT)
-                }
-                return@setOnTouchListener false
-            }
-            
-            // 只有触发了长按后才处理上滑冻结
-            if (isLongPressTriggered && longPressPackage.isNotEmpty()) {
-                if (dy > 60) {
-                    Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
-                    longPressRunnable = null
-                    
-                    if (isFrozen) {
-                        unfreezeApp(packageName, appName)
-                    } else {
-                        freezeApp(packageName, appName)
+                    MotionEvent.ACTION_MOVE -> {
+                        if (isLongPressTriggered && longPressPackage.isNotEmpty()) {
+                            val dy = longPressDownY - event.rawY
+                            if (dy > 60) {
+                                Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
+                                longPressRunnable = null
+
+                                if (isFrozen) {
+                                    unfreezeApp(packageName, appName)
+                                } else {
+                                    freezeApp(packageName, appName)
+                                }
+
+                                isLongPressTriggered = false
+                                longPressPackage = ""
+                                longPressName = ""
+                                return@setOnTouchListener true
+                            }
+                        }
+                        false
                     }
-                    
-                    isLongPressTriggered = false
-                    longPressPackage = ""
-                    longPressName = ""
-                    return@setOnTouchListener true
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
+                        longPressRunnable = null
+                        isLongPressTriggered = false
+                        longPressPackage = ""
+                        longPressName = ""
+                        // 重置背景颜色
+                        view.setBackgroundColor(Color.TRANSPARENT)
+                        when {
+                            isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
+                            currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
+                            isForeground -> view.setBackgroundColor(Color.parseColor("#44FFAA00"))
+                            else -> view.setBackgroundColor(Color.TRANSPARENT)
+                        }
+                        false
+                    }
+                    else -> false
                 }
             }
-            false
         }
-        
-        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-            // 取消所有回调
-            Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
-            longPressRunnable = null
-            
-            if (isLongPressTriggered) {
-                when {
-                    isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
-                    currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
-                    currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
-                    isForeground -> view.setBackgroundColor(Color.parseColor("#44FFFFFF"))
-                    else -> view.setBackgroundColor(Color.TRANSPARENT)
+
+        // 显示应用图标和名称
+        if (packageName.isNotEmpty()) {
+            val iconSize = if (isForeground) 32.dpToPx() else 28.dpToPx()
+
+            val iconView = ImageView(context).apply {
+                val bitmap = iconLoader?.getIconForPackage(context, packageName)
+                if (bitmap != null) {
+                    setImageBitmap(bitmap)
+                } else {
+                    setImageDrawable(fallbackIcon(packageName))
+                }
+                layoutParams = LinearLayout.LayoutParams(iconSize, iconSize)
+                if (isFrozen) {
+                    setAlpha(0.5f)
                 }
             }
-            
-            isLongPressTriggered = false
-            longPressPackage = ""
-            longPressName = ""
-            false
-        }
-        
-        else -> false
-    }
-}
-    }
+            item.addView(iconView)
 
-    // 显示应用图标和名称
-    if (packageName.isNotEmpty()) {
-        val iconSize = if (isForeground) 32.dpToPx() else 28.dpToPx()
-        
-        val iconView = ImageView(context).apply {
-            val bitmap = iconLoader?.getIconForPackage(context, packageName)
-            if (bitmap != null) {
-                setImageBitmap(bitmap)
-            } else {
-                setImageDrawable(fallbackIcon(packageName))
+            val nameView = TextView(context).apply {
+                text = if (isFrozen) "❄️ $appName" else appName
+                textSize = if (isForeground) 8f else 7f
+                setTextColor(if (isForeground) Color.WHITE else Color.parseColor("#CCFFFFFF"))
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                setPadding(0, 0.dpToPx(), 0, 0)
+                maxLines = 1
+                if (isForeground) {
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                }
             }
-            layoutParams = LinearLayout.LayoutParams(iconSize, iconSize)
-            if (isFrozen) {
-                setAlpha(0.5f)
-            }
+            item.addView(nameView)
         }
-        item.addView(iconView)
 
-        val nameView = TextView(context).apply {
-            text = if (isFrozen) "❄️ $appName" else appName
-            textSize = if (isForeground) 8f else 7f
-            setTextColor(if (isForeground) Color.WHITE else Color.parseColor("#CCFFFFFF"))
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            setPadding(0, 2.dpToPx(), 0, 0)
-            maxLines = 1
-            if (isForeground) {
-                setTypeface(null, android.graphics.Typeface.BOLD)
-            }
-        }
-        item.addView(nameView)
+        return item
     }
-
-    return item
-}
 
     private fun createEmptySlot(slotWidth: Int): View {
         val item = LinearLayout(context).apply {
@@ -1045,6 +1109,7 @@ setOnTouchListener { view, event ->
     }
 
     fun hide() {
+        WorkbenchLogger.log("Workbench", "hide() called")
         destroyGestureStrip()
         currentMode = Mode.NORMAL
         overlayView?.let {
@@ -1059,6 +1124,7 @@ setOnTouchListener { view, event ->
     }
 
     fun toggle() {
+        WorkbenchLogger.log("Workbench", "toggle() called, current isShowing: $isShowing")
         if (isShowing) hide() else show()
     }
 

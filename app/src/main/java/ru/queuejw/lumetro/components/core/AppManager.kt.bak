@@ -4,7 +4,6 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.pm.ResolveInfo
 import ru.queuejw.lumetro.model.App
 
 object AppManager {
@@ -59,41 +58,17 @@ object AppManager {
         }
     }
     
-    fun getInstalledApps(context: Context, includeSystem: Boolean = false): List<App> {
+    fun getInstalledApps(context: Context, includeSystem: Boolean): List<App> {
         val apps = mutableListOf<App>()
         try {
             val pm = context.packageManager
-            
-            // 获取所有已安装的应用
             val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            
-            // 获取所有有启动器入口的应用
-            val mainIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val resolveInfos: List<ResolveInfo> = pm.queryIntentActivities(mainIntent, 0)
-            
-            // 提取有启动器入口的包名列表
-            val launcherPackages = resolveInfos.map { it.activityInfo.packageName }.toSet()
-            
             for (appInfo in installedApps) {
-                val pkg = appInfo.packageName
-                
-                // 1. 必须有启动器入口
-                if (!launcherPackages.contains(pkg)) continue
-                
-                // 2. 如果是系统应用且未要求包含，跳过
                 val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
                 if (!includeSystem && isSystem) continue
-                
-                // 3. 排除自身
-                if (pkg == context.packageName) continue
-                
                 val appName = pm.getApplicationLabel(appInfo).toString()
-                apps.add(App(appName, pkg, 0))
+                apps.add(App(appName, appInfo.packageName, 0))
             }
-            
-            // 按应用名称排序
-            apps.sortBy { it.mName }
-            
         } catch (e: Exception) {
             // 忽略
         }
