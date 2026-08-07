@@ -5,9 +5,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.app.WallpaperManager
 import android.app.usage.UsageStatsManager
 import android.provider.Settings
@@ -36,16 +40,13 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 设置基础内容
         setupBaseUI()
-        // 检查所有权限
         checkAllPermissions()
     }
 
     private fun setupBaseUI() {
-        // 先设置一个黑色背景，避免白屏
         wallpaperView = ImageView(this).apply {
-            setBackgroundColor(0xFF000000.toInt())
+            setBackgroundColor(0xFF1A1A1A.toInt())
             scaleType = ImageView.ScaleType.CENTER_CROP
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -105,7 +106,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 所有权限已就绪，初始化应用
         initApp()
     }
 
@@ -122,11 +122,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initApp() {
-        // 加载壁纸
-        loadWallpaper()
+        // 延迟加载壁纸
+        Handler(Looper.getMainLooper()).postDelayed({
+            loadWallpaper()
+        }, 300)
+
         setupReceiver()
-        // 初始化 Shizuku
-        initShizuku()
+
+        // 延迟初始化 Shizuku
+        Handler(Looper.getMainLooper()).postDelayed({
+            initShizuku()
+        }, 500)
+
+        // 延迟检查无障碍
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!SidebarAccessibilityService.isServiceEnabled(this)) {
+                Toast.makeText(this, "请开启无障碍服务", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }, 1000)
     }
 
     private fun loadWallpaper() {
@@ -136,10 +150,19 @@ class MainActivity : AppCompatActivity() {
             if (wallpaperDrawable != null) {
                 wallpaperView.setImageDrawable(wallpaperDrawable)
             } else {
-                wallpaperView.setBackgroundColor(0xFF000000.toInt())
+                wallpaperView.setBackgroundColor(0xFF1A1A1A.toInt())
+                // 重试一次
+                Handler(Looper.getMainLooper()).postDelayed({
+                    try {
+                        val retryDrawable = WallpaperManager.getInstance(this).drawable
+                        if (retryDrawable != null) {
+                            wallpaperView.setImageDrawable(retryDrawable)
+                        }
+                    } catch (e: Exception) { }
+                }, 500)
             }
         } catch (e: Exception) {
-            wallpaperView.setBackgroundColor(0xFF000000.toInt())
+            wallpaperView.setBackgroundColor(0xFF1A1A1A.toInt())
         }
     }
 
@@ -155,40 +178,35 @@ class MainActivity : AppCompatActivity() {
     private fun initShizuku() {
         try {
             if (Shizuku.pingBinder()) {
-                // Shizuku 已连接，请求权限
                 requestShizukuPermission()
             } else {
-                // 等待 Shizuku 连接
                 Shizuku.addBinderReceivedListener {
                     requestShizukuPermission()
                 }
             }
         } catch (e: Exception) {
-            Toast.makeText(this, "请安装 Shizuku", Toast.LENGTH_SHORT).show()
+            // 静默处理
         }
     }
 
     private fun requestShizukuPermission() {
         try {
-            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Shizuku 已授权", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "请授权 Shizuku", Toast.LENGTH_SHORT).show()
-                // 请求 Shizuku 权限
-                Shizuku.requestPermission(100)
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Handler(Looper.getMainLooper()).postDelayed({
+                    try {
+                        Shizuku.requestPermission(100)
+                    } catch (e: Exception) { }
+                }, 500)
             }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Shizuku 权限请求失败", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        // 从权限设置返回后重新检查
-        checkAllPermissions()
+        Handler(Looper.getMainLooper()).postDelayed({
+            checkAllPermissions()
+        }, 300)
     }
-
-    // ============ 手势处理 ============
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {

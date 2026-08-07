@@ -54,11 +54,8 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     private val blacklist = mutableSetOf<String>()
     private val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 
-    // 模式状态
     private enum class Mode {
-        NORMAL,      // 正常模式
-        ADD,         // 添加模式
-        REMOVE       // 移除模式
+        NORMAL, ADD, REMOVE
     }
     private var currentMode = Mode.NORMAL
     private var foregroundPackage = ""
@@ -73,7 +70,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     private var stripIsDragging = false
     private val stripTouchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
-    // 长按上滑冻结相关
     private val coroutineScope = CoroutineScope(Dispatchers.Main + Job())
     private var longPressRunnable: Runnable? = null
     private var longPressPackage = ""
@@ -81,7 +77,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     private var longPressDownY = 0f
     private var isLongPressTriggered = false
 
-    // 电话监听
     private var phoneStateListener: PhoneStateListener? = null
     private var telephonyManager: TelephonyManager? = null
 
@@ -123,38 +118,44 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             iconLoader?.getIconForPackage(context, context.packageName)
         } catch (e: Exception) { }
 
-        // 监听电话状态
         setupPhoneStateListener()
     }
 
     private fun setupPhoneStateListener() {
-    try {
-        telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        phoneStateListener = object : PhoneStateListener() {
-            override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                when (state) {
-                    TelephonyManager.CALL_STATE_IDLE -> {
-                        WorkbenchLogger.log("Workbench", "Phone call ended, restoring workbench")
-                        if (!isScreenOff && !isLandscapeOrientation()) {
-                            show()
+        try {
+            telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            phoneStateListener = object : PhoneStateListener() {
+                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                    when (state) {
+                        TelephonyManager.CALL_STATE_IDLE -> {
+                            WorkbenchLogger.log("Workbench", "Phone call ended, restoring workbench")
+                            if (!isScreenOff && !isLandscapeOrientation()) {
+                                if (overlayView == null) {
+                                    show()
+                                } else {
+                                    overlayView?.visibility = View.VISIBLE
+                                    isShowing = true
+                                    refreshAppContainer()
+                                }
+                            }
                         }
-                    }
-                    TelephonyManager.CALL_STATE_OFFHOOK -> {
-                        WorkbenchLogger.log("Workbench", "Phone call started")
-                    }
-                    TelephonyManager.CALL_STATE_RINGING -> {
-                        WorkbenchLogger.log("Workbench", "Phone ringing")
+                        TelephonyManager.CALL_STATE_OFFHOOK -> {
+                            WorkbenchLogger.log("Workbench", "Phone call started")
+                        }
+                        TelephonyManager.CALL_STATE_RINGING -> {
+                            WorkbenchLogger.log("Workbench", "Phone ringing")
+                        }
                     }
                 }
             }
+            // 所有版本统一使用 listen 方式
+@Suppress("DEPRECATION")
+telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
+            WorkbenchLogger.log("Workbench", "Phone state listener registered")
+        } catch (e: Exception) {
+            WorkbenchLogger.logError("Workbench", "Failed to register phone state listener", e)
         }
-        // 使用兼容方式，所有版本都用 listen
-        telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
-        WorkbenchLogger.log("Workbench", "Phone state listener registered")
-    } catch (e: Exception) {
-        WorkbenchLogger.logError("Workbench", "Failed to register phone state listener", e)
     }
-}
 
     private fun isLandscapeOrientation(): Boolean {
         val orientation = context.resources.configuration.orientation
@@ -233,9 +234,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     fun show() {
-        if (isLandscapeOrientation()) {
-            return
-        }
+        if (isLandscapeOrientation()) return
         if (isShowing) {
             overlayView?.visibility = View.VISIBLE
             return
@@ -384,36 +383,36 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     private fun handleGestureStrip(e: MotionEvent): Boolean {
-        when (e.action) {
-            MotionEvent.ACTION_DOWN -> {
-                stripDownX = e.rawX
-                stripDownY = e.rawY
-                stripIsDragging = false
-                return false
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val dx = e.rawX - stripDownX
-                val dy = e.rawY - stripDownY
-                if (!stripIsDragging && (Math.abs(dx) > stripTouchSlop || Math.abs(dy) > stripTouchSlop)) {
-                    stripIsDragging = true
-                }
-                return false
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (stripIsDragging) {
-                    val dx = e.rawX - stripDownX
-                    if (dx > 60) {
-                        performBack()
-                        stripIsDragging = false
-                        return true
-                    }
-                }
-                stripIsDragging = false
-                return false
-            }
+    when (e.action) {
+        MotionEvent.ACTION_DOWN -> {
+            stripDownX = e.rawX
+            stripDownY = e.rawY
+            stripIsDragging = false
+            return false  // 不拦截
         }
-        return false
+        MotionEvent.ACTION_MOVE -> {
+            val dx = e.rawX - stripDownX
+            val dy = e.rawY - stripDownY
+            if (!stripIsDragging && (Math.abs(dx) > stripTouchSlop || Math.abs(dy) > stripTouchSlop)) {
+                stripIsDragging = true
+            }
+            return false  // 不拦截
+        }
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            if (stripIsDragging) {
+                val dx = e.rawX - stripDownX
+                if (dx > 60) {
+                    performBack()
+                    stripIsDragging = false
+                    return true  // 只有快速右滑才拦截
+                }
+            }
+            stripIsDragging = false
+            return false  // 不拦截
+        }
     }
+    return false
+}
 
     private fun performBack() {
         try {
@@ -661,21 +660,17 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                         try {
                             SidebarAccessibilityService.getInstance()?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
                             scrollToStart()
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "无法打开近期任务", Toast.LENGTH_SHORT).show()
-                        }
+                        } catch (e: Exception) { }
                     }
                     Mode.ADD -> {
                         currentMode = Mode.NORMAL
                         refreshAppContainer()
                         scrollToStart()
-                        Toast.makeText(context, "退出添加模式", Toast.LENGTH_SHORT).show()
                     }
                     Mode.REMOVE -> {
                         currentMode = Mode.NORMAL
                         refreshAppContainer()
                         scrollToStart()
-                        Toast.makeText(context, "退出移除模式", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -686,14 +681,12 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                         currentMode = Mode.ADD
                         refreshAppContainer()
                         scrollToStart()
-                        Toast.makeText(context, "添加模式（点击应用加入黑名单）", Toast.LENGTH_SHORT).show()
                         true
                     }
                     Mode.ADD -> {
                         currentMode = Mode.REMOVE
                         refreshAppContainer()
                         scrollToStart()
-                        Toast.makeText(context, "移除模式（点击移除黑名单）", Toast.LENGTH_SHORT).show()
                         true
                     }
                     else -> false
@@ -810,7 +803,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     private fun freezeApp(pkg: String, name: String) {
         val sh = ShizukuHelper.getInstance()
         if (!sh.isReady()) {
-            Toast.makeText(context, "Shizuku 未就绪，无法冻结", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -837,7 +829,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     private fun unfreezeApp(pkg: String, name: String) {
         val sh = ShizukuHelper.getInstance()
         if (!sh.isReady()) {
-            Toast.makeText(context, "Shizuku 未就绪，无法解冻", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -918,10 +909,7 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                             appSlots.removeAll { it.first == packageName }
                             refreshAppContainer()
                             scrollToStart()
-                            Toast.makeText(context, "已屏蔽 $appName", Toast.LENGTH_SHORT).show()
-                        } else if (blacklist.contains(packageName)) {
-                            Toast.makeText(context, "$appName 已在黑名单中", Toast.LENGTH_SHORT).show()
-                        }
+                        } else if (blacklist.contains(packageName)) { }
                     }
                     Mode.REMOVE -> {
                         if (packageName.isNotEmpty() && blacklist.contains(packageName)) {
@@ -929,7 +917,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                             saveBlacklist()
                             refreshAppContainer()
                             scrollToStart()
-                            Toast.makeText(context, "已移除 $appName", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -956,7 +943,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                                 } catch (e: Exception) { }
 
                                 val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
-                                Toast.makeText(context, "$actionText $appName", Toast.LENGTH_SHORT).show()
                             }
                             longPressRunnable = runnable
                             Handler(Looper.getMainLooper()).postDelayed(runnable, 1000)
@@ -1044,23 +1030,23 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     private fun createEmptySlot(slotWidth: Int): View {
-    val item = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER
-        setPadding(0, 0, 0, 0)
-        layoutParams = LinearLayout.LayoutParams(
-            slotWidth,
-            LinearLayout.LayoutParams.MATCH_PARENT
-        )
-        setBackgroundColor(Color.TRANSPARENT)
-        isClickable = true
-        isFocusable = true
-        setOnClickListener {
-            SidebarAccessibilityService.sidebarManager?.showAppsPanel()
+        val item = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                slotWidth,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                SidebarAccessibilityService.sidebarManager?.showAppsPanel()
+            }
         }
+        return item
     }
-    return item
-}
 
     private fun fallbackIcon(packageName: String): Drawable? {
         return try {
@@ -1079,7 +1065,6 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
                 val topActivity = task.topActivity
                 if (topActivity != null && topActivity.packageName == packageName) {
                     activityManager.moveTaskToFront(task.id, 0)
-                    Toast.makeText(context, appName, Toast.LENGTH_SHORT).show()
                     return
                 }
             }
@@ -1089,11 +1074,8 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
             if (launchIntent != null) {
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(launchIntent)
-                Toast.makeText(context, appName, Toast.LENGTH_SHORT).show()
             }
-        } catch (e: Exception) {
-            Toast.makeText(context, "启动失败", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: Exception) { }
 
         val existingIndex = appSlots.indexOfFirst { it.first == packageName }
         if (existingIndex >= 0) {
@@ -1141,13 +1123,14 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     fun isShowing(): Boolean = isShowing
 
     fun cleanup() {
-    try {
-        context.unregisterReceiver(screenStateReceiver)
-        telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
-    } catch (e: Exception) { }
-    hide()
-    coroutineScope.cancel()
-}
+        try {
+            context.unregisterReceiver(screenStateReceiver)
+            @Suppress("DEPRECATION")
+telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
+        } catch (e: Exception) { }
+        hide()
+        coroutineScope.cancel()
+    }
 
     private fun Int.dpToPx(): Int {
         return (this * context.resources.displayMetrics.density).toInt()

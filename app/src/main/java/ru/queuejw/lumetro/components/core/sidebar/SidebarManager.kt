@@ -600,11 +600,12 @@ inner class TileAdapter(private var tiles: List<TileEntity>, private val iconSiz
                     feels.text = "${data.feelsLike}°"
                     humidity.text = "${data.humidity}%"
                     wind.text = "${data.windDir}${data.windScale}级"
+                    // forecast[0] = 今天, forecast[1] = 明天, forecast[2] = 后天
                     if (data.forecast.size >= 2) {
-                        tomorrow.text = "${data.forecast[0].tempMax}°/${data.forecast[0].tempMin}° ${data.forecast[0].text}"
+                        tomorrow.text = "${data.forecast[1].tempMax}°/${data.forecast[1].tempMin}° ${data.forecast[1].text}"
                     }
                     if (data.forecast.size >= 3) {
-                        overmorrow.text = "${data.forecast[1].tempMax}°/${data.forecast[1].tempMin}° ${data.forecast[1].text}"
+                        overmorrow.text = "${data.forecast[2].tempMax}°/${data.forecast[2].tempMin}° ${data.forecast[2].text}"
                     }
                 }
             }

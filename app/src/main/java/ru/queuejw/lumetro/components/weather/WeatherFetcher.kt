@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 object WeatherFetcher {
     private val APIKEY_LIST = arrayOf(
@@ -37,11 +38,44 @@ object WeatherFetcher {
         else conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
     }
 
+    /**
+     * 根据城市名称获取 location ID
+     */
+    private suspend fun getLocationId(city: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val apiKey = APIKEY_LIST[(System.currentTimeMillis() / 1000 % APIKEY_LIST.size).toInt()]
+                val encodedCity = URLEncoder.encode(city, "UTF-8")
+                val url = "https://geoapi.qweather.com/v2/city/lookup?location=$encodedCity&key=$apiKey"
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                val json = readStream(conn)
+                val obj = org.json.JSONObject(json)
+                val location = obj.optJSONArray("location")
+                if (location != null && location.length() > 0) {
+                    val first = location.optJSONObject(0)
+                    first?.optString("id") ?: null
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e("Weather", "getLocationId error", e)
+                null
+            }
+        }
+    }
+
     suspend fun fetchWeather(city: String = "北京"): WeatherData? {
         return withContext(Dispatchers.IO) {
             try {
                 val apiKey = APIKEY_LIST[(System.currentTimeMillis() / 1000 % APIKEY_LIST.size).toInt()]
-                val locationId = "101120706"
+                
+                val locationId = getLocationId(city)
+                if (locationId == null) {
+                    Log.e("Weather", "Failed to get location ID for city: $city")
+                    return@withContext null
+                }
 
                 val nowLink = "https://devapi.qweather.com/v7/weather/now?location=$locationId&key=$apiKey"
                 val nowConn = URL(nowLink).openConnection() as HttpURLConnection
@@ -76,7 +110,7 @@ object WeatherFetcher {
                     windDir = nowObj?.optString("windDir") ?: "",
                     windScale = nowObj?.optString("windScale") ?: "",
                     humidity = nowObj?.optString("humidity") ?: "",
-                    city = "金乡",
+                    city = city,
                     forecast = forecast
                 )
             } catch (e: Exception) {

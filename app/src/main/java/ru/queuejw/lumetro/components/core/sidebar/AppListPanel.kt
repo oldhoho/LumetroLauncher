@@ -48,11 +48,9 @@ class AppListPanel(
     private val searchHandler = Handler(Looper.getMainLooper())
     private var searchRunnable: Runnable? = null
 
-    // T9 输入状态
     private var t9Input = StringBuilder()
     private var isT9Mode = false
 
-    // 九键映射：字母 -> 数字
     private val t9ReverseMap = mapOf(
         'A' to '2', 'B' to '2', 'C' to '2',
         'D' to '3', 'E' to '3', 'F' to '3',
@@ -64,12 +62,11 @@ class AppListPanel(
         'W' to '9', 'X' to '9', 'Y' to '9', 'Z' to '9'
     )
 
-    // 九键显示数据
     private data class KeyData(val label: String, val letters: String)
     
     private val keyData = listOf(
         listOf(
-            KeyData("", ""),      // 左上角：未冻结
+            KeyData("", ""),
             KeyData("2", "ABC"),
             KeyData("3", "DEF")
         ),
@@ -95,7 +92,6 @@ class AppListPanel(
             )
         }
 
-        // 搜索框 + 设置按钮
         val searchLayout = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
@@ -154,7 +150,6 @@ class AppListPanel(
 
         container.addView(searchLayout)
 
-        // 应用列表
         recyclerView = RecyclerView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -168,7 +163,6 @@ class AppListPanel(
         }
         container.addView(recyclerView)
 
-        // 底部九键键盘
         val keyboardContainer = createKeyboardView()
         container.addView(keyboardContainer)
 
@@ -187,19 +181,15 @@ class AppListPanel(
             gravity = Gravity.CENTER
         }
 
-        // 行1: 左上角(未冻结) | 2 ABC | 3 DEF
         val row1 = createKeyRow(keyData[0], isFirstRow = true)
         container.addView(row1)
 
-        // 行2: 4 GHI | 5 JKL | 6 MNO
         val row2 = createKeyRow(keyData[1], isFirstRow = false)
         container.addView(row2)
 
-        // 行3: 7 PQRS | 8 TUV | 9 WXYZ
         val row3 = createKeyRow(keyData[2], isFirstRow = false)
         container.addView(row3)
 
-        // 行4: 已冻结(左下) | 0 全部(中) | ✕ 清除(右)
         val row4 = createActionRow()
         container.addView(row4)
 
@@ -219,7 +209,6 @@ class AppListPanel(
 
         for (key in keys) {
             val keyView = if (isFirstRow && key.label == "") {
-                // 左上角：未冻结
                 createUnfrozenButton()
             } else {
                 createKeyButton(key)
@@ -246,7 +235,6 @@ class AppListPanel(
                 showUnfrozenApps()
             }
             setOnLongClickListener {
-                Toast.makeText(context, "显示所有未冻结应用", Toast.LENGTH_SHORT).show()
                 true
             }
         }
@@ -273,7 +261,6 @@ class AppListPanel(
 
             setOnLongClickListener {
                 if (key.letters.isNotEmpty()) {
-                    Toast.makeText(context, key.letters, Toast.LENGTH_SHORT).show()
                     true
                 } else {
                     false
@@ -293,7 +280,6 @@ class AppListPanel(
         row.gravity = Gravity.CENTER
         row.setPadding(0, 4.dpToPx(), 0, 0)
 
-        // 左下角：已冻结
         val frozenBtn = TextView(context).apply {
             text = "已冻结"
             textSize = 14f
@@ -315,7 +301,6 @@ class AppListPanel(
         }
         row.addView(frozenBtn)
 
-        // 中键：0 全部
         val allBtn = TextView(context).apply {
             text = "0 全部"
             textSize = 14f
@@ -336,7 +321,6 @@ class AppListPanel(
         }
         row.addView(allBtn)
 
-        // 右键：✕ 清除
         val clearBtn = TextView(context).apply {
             text = "✕ 清除"
             textSize = 14f
@@ -360,15 +344,12 @@ class AppListPanel(
         return row
     }
 
-    // ============ 显示已冻结 / 未冻结应用 ============
-
     private fun showFrozenApps() {
         val frozenApps = allApps.filter { app ->
             app.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
         }
         
         if (frozenApps.isEmpty()) {
-            Toast.makeText(context, "没有已冻结的应用", Toast.LENGTH_SHORT).show()
             return
         }
         
@@ -383,8 +364,6 @@ class AppListPanel(
         displayedGroups = items
         adapter?.updateData(displayedGroups)
         recyclerView?.smoothScrollToPosition(0)
-        
-        Toast.makeText(context, "已显示 ${frozenApps.size} 个冻结应用", Toast.LENGTH_SHORT).show()
     }
 
     private fun showUnfrozenApps() {
@@ -393,7 +372,6 @@ class AppListPanel(
         }
         
         if (unfrozenApps.isEmpty()) {
-            Toast.makeText(context, "没有未冻结的应用", Toast.LENGTH_SHORT).show()
             return
         }
         
@@ -408,11 +386,7 @@ class AppListPanel(
         displayedGroups = items
         adapter?.updateData(displayedGroups)
         recyclerView?.smoothScrollToPosition(0)
-        
-        Toast.makeText(context, "已显示 ${unfrozenApps.size} 个未冻结应用", Toast.LENGTH_SHORT).show()
     }
-
-    // ============ T9 预测输入 ============
 
     private fun handleT9Input(digit: String) {
         t9Input.append(digit)
@@ -444,7 +418,6 @@ class AppListPanel(
         }
         
         if (matched.isEmpty()) {
-            Toast.makeText(context, "没有匹配的应用", Toast.LENGTH_SHORT).show()
             displayedGroups = buildGroupedData(allApps)
         } else {
             displayedGroups = buildGroupedData(matched)
@@ -466,15 +439,11 @@ class AppListPanel(
         adapter?.updateData(displayedGroups)
     }
 
-    // ============ 原有方法 ============
-
     fun scrollToLetter(targetLetter: String) {
         val position = getFirstPositionOfLetter(targetLetter)
         if (position >= 0) {
             val lm = recyclerView?.layoutManager as? LinearLayoutManager
             lm?.scrollToPositionWithOffset(position, 0)
-        } else {
-            Toast.makeText(context, "没有 $targetLetter 开头的应用", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -582,7 +551,6 @@ class AppListPanel(
                     if (sh.unfreezeApp(pkg)) {
                         FreezeManager.setFrozen(context, pkg, false)
                         withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "已解冻", Toast.LENGTH_SHORT).show()
                             onRefreshTiles()
                             AppManager.launchApp(pkg, context)
                             onHidePanel()
@@ -623,11 +591,6 @@ class AppListPanel(
                         withContext(Dispatchers.Main) {
                             onRefreshTiles()
                             onRefreshApps()
-                            Toast.makeText(context, "已解冻", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show()
                         }
                     }
                 } else {
@@ -636,11 +599,6 @@ class AppListPanel(
                         withContext(Dispatchers.Main) {
                             onRefreshTiles()
                             onRefreshApps()
-                            Toast.makeText(context, "已冻结", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "冻结失败", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -651,13 +609,11 @@ class AppListPanel(
             pv.addView(createPopupItem("添加到冻结列表") {
                 currentPopup?.dismiss()
                 FreezeManager.addToList(context, pkg)
-                Toast.makeText(context, "已添加到冻结列表", Toast.LENGTH_SHORT).show()
             })
         } else {
             pv.addView(createPopupItem("从冻结列表移除") {
                 currentPopup?.dismiss()
                 FreezeManager.removeFromList(context, pkg)
-                Toast.makeText(context, "已从冻结列表移除", Toast.LENGTH_SHORT).show()
             })
         }
 
@@ -699,36 +655,33 @@ class AppListPanel(
     }
 
     private fun performOneKeyFreeze() {
-    val sh = ShizukuHelper.getInstance()
-    ShizukuHelper.getInstance().checkStatus()
-    if (!sh.isReady()) {
-        Toast.makeText(context, "Shizuku 未就绪", Toast.LENGTH_SHORT).show()
-        return
-    }
-    val list = FreezeManager.getList(context)
-    if (list.isEmpty()) {
-        Toast.makeText(context, "冻结列表为空", Toast.LENGTH_SHORT).show()
-        return
-    }
-    coroutineScope.launch(Dispatchers.IO) {
-        var count = 0
-        for (pkg in list) {
-            if (FreezeManager.isFrozen(context, pkg)) continue
-            iconLoader.getIconForPackage(context, pkg)
-            if (sh.freezeApp(pkg)) {
-                FreezeManager.setFrozen(context, pkg, true)
-                count++
-                Thread.sleep(50)
+        val sh = ShizukuHelper.getInstance()
+        ShizukuHelper.getInstance().checkStatus()
+        if (!sh.isReady()) {
+            return
+        }
+        val list = FreezeManager.getList(context)
+        if (list.isEmpty()) {
+            return
+        }
+        coroutineScope.launch(Dispatchers.IO) {
+            var count = 0
+            for (pkg in list) {
+                if (FreezeManager.isFrozen(context, pkg)) continue
+                iconLoader.getIconForPackage(context, pkg)
+                if (sh.freezeApp(pkg)) {
+                    FreezeManager.setFrozen(context, pkg, true)
+                    count++
+                    Thread.sleep(50)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                onRefreshTiles()
+                onRefreshApps()
+                onHidePanel()
             }
         }
-        withContext(Dispatchers.Main) {
-            Toast.makeText(context, "已冻结 $count 个应用", Toast.LENGTH_SHORT).show()
-            onRefreshTiles()
-            onRefreshApps()
-            onHidePanel()  // 添加这行
-        }
     }
-}
 
     fun refresh(apps: List<App>) {
         allApps = apps
