@@ -77,35 +77,6 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(bgReceiver, IntentFilter("ru.queuejw.lumetro.UPDATE_MAIN_BG"), RECEIVER_EXPORTED)
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - lastVolumePressTime > 1000) {
-                volumePressCount = 0
-            }
-            volumePressCount++
-            lastVolumePressTime = currentTime
-
-            if (volumePressCount >= 3) {
-                toggleWorkbench()
-                volumePressCount = 0
-                return true
-            }
-        }
-        return super.onKeyDown(keyCode, event)
-    }
-
-    private fun toggleWorkbench() {
-        // 检查无障碍服务是否已连接
-        if (SidebarAccessibilityService.sidebarManager == null) {
-            Toast.makeText(this, "⚠️ 请先开启无障碍服务", Toast.LENGTH_LONG).show()
-            return
-        }
-        SidebarAccessibilityService.toggleWorkbench()
-        val isShowing = SidebarAccessibilityService.isWorkbenchShowing()
-        Toast.makeText(this, if (isShowing) "🚀 工作台已打开" else "工作台已关闭", Toast.LENGTH_SHORT).show()
-    }
-
     private fun loadWallpaper() {
         try {
             val wallpaperManager = WallpaperManager.getInstance(this)
@@ -120,72 +91,89 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-    when (event.action) {
-        MotionEvent.ACTION_DOWN -> {
-            startX = event.rawX
-            startY = event.rawY
-            isDragging = false
-            touchCount = event.pointerCount
-        }
-        MotionEvent.ACTION_MOVE -> {
-            val diffX = event.rawX - startX
-            val diffY = event.rawY - startY
-            if (Math.abs(diffX) > 20 || Math.abs(diffY) > 20) {
-                isDragging = true
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastVolumePressTime > 1000) {
+                volumePressCount = 0
             }
-        }
-        MotionEvent.ACTION_UP -> {
-            val diffX = event.rawX - startX
-            val diffY = event.rawY - startY
-            val absDiffX = Math.abs(diffX)
-            val absDiffY = Math.abs(diffY)
-
-            if (!isDragging) {
+            volumePressCount++
+            lastVolumePressTime = currentTime
+            if (volumePressCount >= 3) {
+                volumePressCount = 0
+                // 三次连按音量键 → 打开侧边栏
+                SidebarAccessibilityService.sidebarManager?.showPanel()
                 return true
             }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
 
-            val isHorizontal = absDiffX > absDiffY
-            val isVertical = absDiffY > absDiffX
-
-            // 双指手势
-            if (touchCount >= 2) {
-                if (isVertical && (diffY > 80 || diffY < -80)) {
-                    return true
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                startX = event.rawX
+                startY = event.rawY
+                isDragging = false
+                touchCount = event.pointerCount
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val diffX = event.rawX - startX
+                val diffY = event.rawY - startY
+                if (Math.abs(diffX) > 20 || Math.abs(diffY) > 20) {
+                    isDragging = true
                 }
             }
+            MotionEvent.ACTION_UP -> {
+                val diffX = event.rawX - startX
+                val diffY = event.rawY - startY
+                val absDiffX = Math.abs(diffX)
+                val absDiffY = Math.abs(diffY)
 
-            // 单指手势
-            when {
-                // 左滑 → 展开/关闭侧边栏
-                isHorizontal && diffX < -80 -> {
-                    val manager = SidebarAccessibilityService.sidebarManager
-                    if (manager != null) {
-                        if (manager.isPanelExpanded()) {
-                            manager.hidePanel()
-                        } else {
-                            manager.showPanel()
-                        }
+                if (!isDragging) {
+                    return true
+                }
+
+                val isHorizontal = absDiffX > absDiffY
+                val isVertical = absDiffY > absDiffX
+
+                // 双指手势
+                if (touchCount >= 2) {
+                    if (isVertical && (diffY > 80 || diffY < -80)) {
+                        return true
                     }
-                    return true
                 }
-                // 上滑 → 不触发工作台
-                isVertical && diffY < -80 -> {
-                    return true
-                }
-                // 下滑 → 展开通知
-                isVertical && diffY > 80 -> {
-                    // 直接通过无障碍服务展开通知
-                    SidebarAccessibilityService.getInstance()?.performGlobalAction(
-                        android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
-                    )
-                    return true
+
+                // 单指手势
+                when {
+                    // 左滑 → 展开/关闭侧边栏
+                    isHorizontal && diffX < -80 -> {
+                        SidebarAccessibilityService.sidebarManager?.let {
+                            if (it.isPanelExpanded()) {
+                                it.hidePanel()
+                            } else {
+                                it.showPanel()
+                            }
+                        }
+                        return true
+                    }
+                    // 上滑 → 打开全部应用列表（九键面板）
+isVertical && diffY < -80 -> {
+    SidebarAccessibilityService.sidebarManager?.showAppsPanel()
+    return true
+}
+                    // 下滑 → 展开通知
+                    isVertical && diffY > 80 -> {
+                        SidebarAccessibilityService.getInstance()?.performGlobalAction(
+                            android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS
+                        )
+                        return true
+                    }
                 }
             }
         }
+        return super.onTouchEvent(event)
     }
-    return super.onTouchEvent(event)
-}
 
     override fun onDestroy() {
         super.onDestroy()

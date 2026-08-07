@@ -1044,20 +1044,23 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
     }
 
     private fun createEmptySlot(slotWidth: Int): View {
-        val item = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 0)
-            layoutParams = LinearLayout.LayoutParams(
-                slotWidth,
-                LinearLayout.LayoutParams.MATCH_PARENT
-            )
-            setBackgroundColor(Color.TRANSPARENT)
-            isClickable = false
-            isFocusable = false
+    val item = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(0, 0, 0, 0)
+        layoutParams = LinearLayout.LayoutParams(
+            slotWidth,
+            LinearLayout.LayoutParams.MATCH_PARENT
+        )
+        setBackgroundColor(Color.TRANSPARENT)
+        isClickable = true
+        isFocusable = true
+        setOnClickListener {
+            SidebarAccessibilityService.sidebarManager?.showAppsPanel()
         }
-        return item
     }
+    return item
+}
 
     private fun fallbackIcon(packageName: String): Drawable? {
         return try {

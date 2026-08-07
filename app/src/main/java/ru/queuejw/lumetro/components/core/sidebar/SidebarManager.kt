@@ -1,6 +1,6 @@
 package ru.queuejw.lumetro.components.core.sidebar
 import kotlinx.coroutines.isActive
-
+import ru.queuejw.lumetro.components.core.sidebar.AppListPanel
 import net.sourceforge.pinyin4j.PinyinHelper
 import net.sourceforge.pinyin4j.format.HanyuPinyinCaseType
 import net.sourceforge.pinyin4j.format.HanyuPinyinOutputFormat
@@ -93,9 +93,9 @@ class SidebarManager(private val context: Context) {
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var stripWidth = 6.dpToPx()
     private val tilesWidth = 280.dpToPx()
-    private val appsWidth = screenWidth - 40.dpToPx()
+    private val appsWidth = (screenWidth * 0.85).toInt()
     private val tilesX get() = screenWidth - tilesWidth
-    private val appsX get() = screenWidth - appsWidth
+    private val appsX get() = (screenWidth - appsWidth) / 2 + 20.dpToPx()
     private val hiddenX = screenWidth
     private var swipeThreshold = 40.dpToPx()
 
@@ -113,6 +113,7 @@ class SidebarManager(private val context: Context) {
     private var tileAdapter: TileAdapter? = null
     private var appAdapter: AppListAdapter? = null
     private var itemTouchHelper: ItemTouchHelper? = null
+    private var appListPanel: AppListPanel? = null
 
     private var cachedTiles = mutableListOf<TileEntity>()
     private var cachedApps = emptyList<App>()
@@ -235,7 +236,7 @@ class SidebarManager(private val context: Context) {
     if (panelView != null) return
     panelParams = WindowManager.LayoutParams(appsWidth, WindowManager.LayoutParams.MATCH_PARENT, getWindowType(),
         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-        PixelFormat.TRANSLUCENT).apply { gravity = Gravity.LEFT or Gravity.TOP; x = hiddenX; y = 0 }
+        PixelFormat.TRANSLUCENT).apply { gravity = Gravity.LEFT or Gravity.TOP; x = appsX; y = 0 }
     contentContainer = FrameLayout(context).apply {
         layoutParams = FrameLayout.LayoutParams(tilesWidth, FrameLayout.LayoutParams.MATCH_PARENT)
         try {
@@ -1209,159 +1210,38 @@ private fun createEditPanelView(t: TileEntity): View {
     sv.addView(rl); return sv
 }
     // ===== 应用列表 =====
-    private fun loadAppsContent() {
-        FreezeManager.getList(context)
-        if (appsRecyclerView != null) { appAdapter?.updateData(sortByUsage(filteredApps())); return }
-        val ct = contentContainer ?: return; ct.removeAllViews()
-        val sl = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK) }
-        val sb = EditText(context).apply {
-            hint = "搜索应用..."; setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
-            setPadding(16.dpToPx(), 10.dpToPx(), 16.dpToPx(), 10.dpToPx()); setBackgroundColor(Color.parseColor("#FF222222"))
-            isFocusable = true; isFocusableInTouchMode = true; isCursorVisible = true
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(4.dpToPx(), 2.dpToPx(), 4.dpToPx(), 4.dpToPx()) }
-            setOnTouchListener { _, ev -> if (ev.action == MotionEvent.ACTION_UP) { requestFocus(); (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(this, InputMethodManager.SHOW_IMPLICIT) }; false }
-        }
-        sl.addView(sb)
-        appsRecyclerView = RecyclerView(context).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
-            isNestedScrollingEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER; setHasFixedSize(true)
-        }
-        sl.addView(appsRecyclerView); ct.addView(sl)
-        if (sortedCachedApps.isEmpty() && cachedApps.isNotEmpty()) sortedCachedApps = sortApps(cachedApps)
-        val filtered = sortApps(filteredApps())
-val grouped = linkedMapOf<String, MutableList<App>>()
-var currentLetter = ""
-for (app in filtered) {
-    val name = app.mName
-    if (name.isEmpty()) continue
-    val letter = ru.queuejw.lumetro.components.utils.PinYinStringHelper.getAlpha(name)
-    if (letter == "#") continue
-    if (letter != currentLetter) {
-        currentLetter = letter
-        grouped.getOrPut(letter) { mutableListOf() }
+
+private fun loadAppsContent() {
+    val ct = contentContainer ?: return
+    ct.removeAllViews()
+    
+    // 如果数据未加载，延迟重试
+    if (cachedApps.isEmpty()) {
+        android.util.Log.d("SidebarManager", "loadAppsContent: cachedApps is empty, retrying...")
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            loadAppsContent()
+        }, 300)
+        return
     }
-    grouped[currentLetter]?.add(app)
-}
-val withLetters = ArrayList<App>()
-for (letter in 'A'..'Z') {
-    val list = grouped[letter.toString()]
-    if (list != null) {
-        withLetters.add(App(letter.toString(), null, -1))
-        withLetters.addAll(list)
+    
+    if (appListPanel == null) {
+        appListPanel = AppListPanel(
+            context = context,
+            iconLoader = iconLoader,
+            coroutineScope = coroutineScope,
+            onHidePanel = { hidePanel() },
+            onRefreshTiles = { refreshTilesIfNeeded() },
+            onShowSettings = { showPanelBgDialog() },
+            onShowFreezeDialog = { showFreezeListDialog() },
+            onPinApp = { app -> pinApp(app) },
+            onRefreshApps = { refreshAppsIfNeeded() }
+        )
     }
-}
-withLetters.add(0, App("❄ 一键冻结", "freeze_button", 0))
-withLetters.add(1, App("⚙ 设置", "settings_button", 0))
-val appList = ArrayList<App>(withLetters)
-appAdapter = AppListAdapter(appList)
-        appsRecyclerView?.layoutManager = SpannedGridLayoutManager(RecyclerView.VERTICAL, 12, 4).apply {
-            spanSizeLookup = SpannedGridLayoutManager.SpanSizeLookup { SpanSize(1, 1) }
-        }
-        appsRecyclerView?.adapter = appAdapter
-        appsRecyclerView?.alpha = 0f; appsRecyclerView?.animate()?.alpha(1f)?.setDuration(250)?.start()
-        sb.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
-            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {
-                val filtered = appList.filter { it.mPackage != "freeze_button" && it.mPackage != "settings_button" }
-                    .let { list -> if (list.size > 1) list else appList }
-                    .filter { it.mName.lowercase().contains(s?.toString()?.lowercase() ?: "") }
-                appAdapter?.updateData(filtered)
-            }
-            override fun afterTextChanged(s: android.text.Editable?) {}
-        })
-    }
-
-    inner class AppListAdapter(private var apps: List<App>) : RecyclerView.Adapter<AppListAdapter.AVH>() {
-    inner class AVH(val c: FrameLayout, val icon: ImageView, val label: TextView) : RecyclerView.ViewHolder(c)
-    fun updateData(a: List<App>) { if (a != apps) { apps = a; notifyDataSetChanged() } }
-    override fun getItemCount() = apps.size
-
-    override fun onCreateViewHolder(p: android.view.ViewGroup, vt: Int): AVH {
-        val outer = FrameLayout(p.context).apply {
-            layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
-            setPadding(4.dpToPx(), 4.dpToPx(), 4.dpToPx(), 4.dpToPx())
-        }
-        val iv = ImageView(p.context).apply {
-            layoutParams = FrameLayout.LayoutParams(36.dpToPx(), 36.dpToPx()).apply { gravity = Gravity.CENTER }
-            scaleType = ImageView.ScaleType.FIT_CENTER
-        }
-        val tv = TextView(p.context).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                bottomMargin = 2.dpToPx()
-            }
-            textSize = 10f; setTextColor(Color.WHITE); maxLines = 1
-            setShadowLayer(2f, 0f, 1f, Color.BLACK); gravity = Gravity.CENTER
-        }
-        outer.addView(iv); outer.addView(tv)
-        return AVH(outer, iv, tv)
-    }
-
-    override fun onBindViewHolder(h: AVH, pos: Int) {
-        val a = apps[pos]
-        h.label.text = a.mName
-
-        if (a.mPackage == "freeze_button") {
-            val corner = 6.dpToPx().toFloat()
-            val base = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.parseColor("#FF222222")); setCornerRadius(corner) }
-            val light = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColors(intArrayOf(Color.argb(60, 255, 255, 255), Color.argb(0, 255, 255, 255), Color.argb(40, 0, 0, 0))); gradientType = GradientDrawable.LINEAR_GRADIENT; orientation = GradientDrawable.Orientation.TL_BR; setCornerRadius(corner) }
-            GlassTileHelper.applyGlassShell(h.c, corner)
-            h.icon.setImageResource(android.R.drawable.ic_lock_lock)
-            h.label.text = "冻结"
-            h.c.setOnLongClickListener { true }
-            h.c.setOnClickListener { performOneKeyFreeze() }
-            return
-        }
-        if (a.mPackage == "settings_button") {
-            val corner = 6.dpToPx().toFloat()
-            val base = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.parseColor("#FF222222")); setCornerRadius(corner) }
-            val light = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColors(intArrayOf(Color.argb(60, 255, 255, 255), Color.argb(0, 255, 255, 255), Color.argb(40, 0, 0, 0))); gradientType = GradientDrawable.LINEAR_GRADIENT; orientation = GradientDrawable.Orientation.TL_BR; setCornerRadius(corner) }
-            GlassTileHelper.applyGlassShell(h.c, corner)
-            h.icon.setImageResource(android.R.drawable.ic_menu_manage)
-            h.label.text = "设置"
-            h.c.setOnLongClickListener { true }
-            h.c.setOnClickListener { showPanelBgDialog() }
-            return
-        }
-
-        val cornerRadiusPx = 4.dpToPx().toFloat()
-        val base = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.TRANSPARENT); setCornerRadius(cornerRadiusPx) }
-        val shadow = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColors(intArrayOf(0x00000000.toInt(), 0x40000000.toInt())); gradientType = GradientDrawable.LINEAR_GRADIENT; orientation = GradientDrawable.Orientation.TOP_BOTTOM; setCornerRadius(cornerRadiusPx) }
-        val highlight = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColors(intArrayOf(0x28FFFFFF.toInt(), 0x00000000.toInt())); gradientType = GradientDrawable.LINEAR_GRADIENT; orientation = GradientDrawable.Orientation.TOP_BOTTOM; setCornerRadius(cornerRadiusPx) }
-        GlassTileHelper.applyGlassShell(h.c, cornerRadiusPx)
-
-        val isFrozenApp = a.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
-        h.c.alpha = if (isFrozenApp) 0.5f else 1f
-        if (a.mPackage != null) {
-            val bmp = iconLoader.getIconForPackage(context, a.mPackage)
-            if (bmp != null) h.icon.setImageBitmap(Bitmap.createScaledBitmap(bmp, 36.dpToPx(), 36.dpToPx(), true))
-            else h.icon.setImageResource(android.R.drawable.sym_def_app_icon)
-        }
-        h.c.setOnClickListener {
-            if (isFrozenApp && a.mPackage != null) {
-                coroutineScope.launch(Dispatchers.IO) {
-                    val sh = ShizukuHelper.getInstance()
-                    if (sh.unfreezeApp(a.mPackage!!)) {
-                        FreezeManager.setFrozen(context, a.mPackage!!, false)
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "已解冻，启动中...", Toast.LENGTH_SHORT).show()
-                            refreshTilesIfNeeded()
-                            try { AppManager.launchApp(a.mPackage, context) } catch (e: Exception) {}
-                            hidePanel()
-                        }
-                    } else { withContext(Dispatchers.Main) { Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show() } }
-                }
-            } else {
-                h.c.animate().scaleX(0.9f).scaleY(0.9f).alpha(0.7f).setDuration(100).withEndAction {
-                    a.mPackage?.let { coroutineScope.launch { try { AppManager.launchApp(it, context) } catch (ex: Exception) {}; hidePanel() } }
-                }.start()
-            }
-        }
-        h.c.setOnLongClickListener {
-            val inFreezeList = a.mPackage?.let { FreezeManager.getList(context).contains(it) } ?: false
-            showAppPopup(h.c, a, inFreezeList)
-            true
-        }
+    
+    val view = appListPanel?.createView()
+    if (view != null) {
+        ct.addView(view)
+        appListPanel?.loadApps(filteredApps())
     }
 }
 
@@ -1457,13 +1337,22 @@ appAdapter = AppListAdapter(appList)
     }
 
     fun showPanel() { if (!isPanelVisible) { createPanel(); windowManager.addView(panelView, panelParams); isPanelVisible = true; anim(tilesX, PanelLevel.TILES) } }
+    fun showAppsPanel() {
+    if (!isPanelVisible) {
+        createPanel()
+        windowManager.addView(panelView, panelParams)
+        isPanelVisible = true
+    }
+    // 直接切换到应用列表
+    anim(appsX, PanelLevel.APPS)
+}
     fun selectLetter(letter: String?) { val pos = getLetterPositions()[letter]; if (pos != null) { appsRecyclerView?.smoothScrollToPosition(pos) } }
-    fun hidePanel() { if (isPanelVisible) anim(hiddenX, PanelLevel.HIDDEN) }
     fun hidePanelImmediately() { if (isPanelVisible) { try { windowManager.removeView(panelView) } catch (e: Exception) {}; isPanelVisible = false } }
+    fun hidePanel() { if (isPanelVisible) anim(hiddenX, PanelLevel.HIDDEN) }
     fun isPanelExpanded() = currentLevel != PanelLevel.HIDDEN
 
     fun destroyGestureStrip() { gestureView?.let { try { windowManager.removeView(it) } catch (ex: Exception) {} }; gestureView = null; gestureParams = null }
-    private fun destroyPanel() { itemTouchHelper?.attachToRecyclerView(null); itemTouchHelper = null; panelView?.let { it.setOnTouchListener(null); (it as? ViewGroup)?.removeAllViews(); try { windowManager.removeView(it) } catch (ex: Exception) {} }; panelView = null; panelParams = null; contentContainer = null; tilesRecyclerView = null; appsRecyclerView = null; tileAdapter = null; appAdapter = null }
+    private fun destroyPanel() { appListPanel?.clearSearch(); itemTouchHelper?.attachToRecyclerView(null); itemTouchHelper = null; panelView?.let { it.setOnTouchListener(null); (it as? ViewGroup)?.removeAllViews(); try { windowManager.removeView(it) } catch (ex: Exception) {} }; panelView = null; panelParams = null; contentContainer = null; tilesRecyclerView = null; appsRecyclerView = null; tileAdapter = null; appAdapter = null }
     fun destroy() { currentAnimator?.cancel(); currentAnimator = null; hideEditPanel(); destroyPanel(); destroyGestureStrip(); isPanelVisible = false; currentLevel = PanelLevel.HIDDEN; db?.close(); db = null; coroutineScope.cancel() }
     private fun Int.dpToPx(): Int = (this * context.resources.displayMetrics.density).toInt()
 }
