@@ -440,7 +440,7 @@ class AppListPanel(
             if (firstLetters.isEmpty()) return@filter false
             
             val encoded = encodeToT9(firstLetters)
-            encoded.startsWith(input)
+            encoded.contains(input)
         }
         
         if (matched.isEmpty()) {

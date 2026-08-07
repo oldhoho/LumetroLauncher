@@ -206,7 +206,12 @@ class SidebarManager(private val context: Context) {
         try {
             val rx = e.rawX; val ry = e.rawY
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> { gestureDownX = rx; gestureDownY = ry; gestureStartX = panelParams?.x ?: hiddenX; return true }
+                MotionEvent.ACTION_DOWN -> { 
+    gestureDownX = rx; 
+    gestureDownY = ry; 
+    gestureStartX = panelParams?.x ?: tilesX; 
+    return true 
+}
                 MotionEvent.ACTION_MOVE -> {
                     val dx = rx - gestureDownX
                     if (!isGestureDragging && Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(ry - gestureDownY)) {
@@ -1320,21 +1325,54 @@ private fun loadAppsContent() {
     }
 
     private fun anim(tx: Int, tl: PanelLevel) {
-        currentAnimator?.cancel(); switchToLevel(tl)
-        val sx = panelParams?.x ?: hiddenX; val sh = tl == PanelLevel.HIDDEN
-        currentAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 300; interpolator = DecelerateInterpolator()
-            addUpdateListener { a -> panelParams?.x = (sx + (tx - sx) * a.animatedFraction).toInt(); panelView?.let { try { windowManager.updateViewLayout(it, panelParams) } catch (ex: Exception) {} } }
-            addListener(object : android.animation.AnimatorListenerAdapter() {
-                override fun onAnimationEnd(a: android.animation.Animator) {
-                    if (sh && isPanelVisible) { destroyPanel(); isPanelVisible = false; currentLevel = PanelLevel.HIDDEN; onPanelStateChangeListener?.invoke(false, PanelLevel.HIDDEN) }
-                    else onPanelStateChangeListener?.invoke(true, tl)
-                    currentAnimator = null
-                }
-            })
-            start()
+    currentAnimator?.cancel()
+    switchToLevel(tl)
+    val sx = panelParams?.x ?: hiddenX
+    val sh = tl == PanelLevel.HIDDEN
+    
+    currentAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = 350
+        interpolator = DecelerateInterpolator()
+        addUpdateListener { a ->
+            val fraction = a.animatedFraction
+            // 位置动画
+            panelParams?.x = (sx + (tx - sx) * fraction).toInt()
+            
+            // 只有应用列表才做缩放动画，磁贴面板只平移
+            if (tl == PanelLevel.APPS) {
+                val scale = 0.7f + 0.3f * fraction
+                panelView?.scaleX = scale
+                panelView?.scaleY = scale
+                panelView?.alpha = 0.1f + 0.9f * fraction
+            } else {
+                panelView?.scaleX = 1f
+                panelView?.scaleY = 1f
+                panelView?.alpha = 1f
+            }
+            
+            panelView?.let {
+                try { windowManager.updateViewLayout(it, panelParams) } catch (ex: Exception) {}
+            }
         }
+        addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(a: android.animation.Animator) {
+                if (sh && isPanelVisible) {
+                    destroyPanel()
+                    isPanelVisible = false
+                    currentLevel = PanelLevel.HIDDEN
+                    onPanelStateChangeListener?.invoke(false, PanelLevel.HIDDEN)
+                } else {
+                    panelView?.scaleX = 1f
+                    panelView?.scaleY = 1f
+                    panelView?.alpha = 1f
+                    onPanelStateChangeListener?.invoke(true, tl)
+                }
+                currentAnimator = null
+            }
+        })
+        start()
     }
+}
 
     fun showPanel() { if (!isPanelVisible) { createPanel(); windowManager.addView(panelView, panelParams); isPanelVisible = true; anim(tilesX, PanelLevel.TILES) } }
     fun showAppsPanel() {
