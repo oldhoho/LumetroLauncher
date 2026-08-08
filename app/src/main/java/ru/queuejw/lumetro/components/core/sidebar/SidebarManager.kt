@@ -213,9 +213,13 @@ class SidebarManager(private val context: Context) {
     return true 
 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = rx - gestureDownX
-                    if (!isGestureDragging && Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(ry - gestureDownY)) {
-                        isGestureDragging = true
+    // 锁屏时禁止手势
+    if (isScreenLocked()) {
+        return true
+    }
+    val dx = rx - gestureDownX
+    if (!isGestureDragging && Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(ry - gestureDownY)) {
+        isGestureDragging = true
                         if (!isPanelVisible) { createPanel(); try { windowManager.addView(panelView, panelParams) } catch (e: Exception) { Log.e("SidebarManager", "addView failed", e) }; isPanelVisible = true; gestureStartX = hiddenX }
                     }
                     if (isGestureDragging) { panelParams?.x = (gestureStartX + dx).toInt().coerceIn(if (currentLevel == PanelLevel.APPS) tilesX else appsX, hiddenX); panelView?.let { windowManager.updateViewLayout(it, panelParams) } }
@@ -1375,23 +1379,102 @@ private fun loadAppsContent() {
     }
 }
 
-    fun showPanel() { if (!isPanelVisible) { createPanel(); windowManager.addView(panelView, panelParams); isPanelVisible = true; anim(tilesX, PanelLevel.TILES) } }
-    fun showAppsPanel() {
-    if (!isPanelVisible) {
-        createPanel()
-        windowManager.addView(panelView, panelParams)
-        isPanelVisible = true
+        fun showPanel() {
+        if (isScreenLocked()) return
+        if (!isPanelVisible) {
+            createPanel()
+            windowManager.addView(panelView, panelParams)
+            isPanelVisible = true
+            anim(tilesX, PanelLevel.TILES)
+        }
     }
-    // 直接切换到应用列表
-    anim(appsX, PanelLevel.APPS)
-}
-    fun selectLetter(letter: String?) { val pos = getLetterPositions()[letter]; if (pos != null) { appsRecyclerView?.smoothScrollToPosition(pos) } }
-    fun hidePanelImmediately() { if (isPanelVisible) { try { windowManager.removeView(panelView) } catch (e: Exception) {}; isPanelVisible = false } }
-    fun hidePanel() { if (isPanelVisible) anim(hiddenX, PanelLevel.HIDDEN) }
+
+    fun showAppsPanel() {
+        if (isScreenLocked()) return
+        if (!isPanelVisible) {
+            createPanel()
+            contentContainer?.layoutParams = FrameLayout.LayoutParams(appsWidth, FrameLayout.LayoutParams.MATCH_PARENT)
+            panelParams?.x = appsX
+            windowManager.addView(panelView, panelParams)
+            isPanelVisible = true
+        }
+        anim(appsX, PanelLevel.APPS)
+    }
+
+    fun selectLetter(letter: String?) {
+        val pos = getLetterPositions()[letter]
+        if (pos != null) {
+            appsRecyclerView?.smoothScrollToPosition(pos)
+        }
+    }
+
+    fun hidePanel() {
+        appListPanel?.clearSearch()
+        if (isPanelVisible) anim(hiddenX, PanelLevel.HIDDEN)
+    }
+
+    fun hidePanelImmediately() {
+        if (isPanelVisible) {
+            try {
+                windowManager.removeView(panelView)
+            } catch (e: Exception) {}
+            isPanelVisible = false
+        }
+    }
+
     fun isPanelExpanded() = currentLevel != PanelLevel.HIDDEN
 
-    fun destroyGestureStrip() { gestureView?.let { try { windowManager.removeView(it) } catch (ex: Exception) {} }; gestureView = null; gestureParams = null }
-    private fun destroyPanel() { appListPanel?.clearSearch(); itemTouchHelper?.attachToRecyclerView(null); itemTouchHelper = null; panelView?.let { it.setOnTouchListener(null); (it as? ViewGroup)?.removeAllViews(); try { windowManager.removeView(it) } catch (ex: Exception) {} }; panelView = null; panelParams = null; contentContainer = null; tilesRecyclerView = null; appsRecyclerView = null; tileAdapter = null; appAdapter = null }
-    fun destroy() { currentAnimator?.cancel(); currentAnimator = null; hideEditPanel(); destroyPanel(); destroyGestureStrip(); isPanelVisible = false; currentLevel = PanelLevel.HIDDEN; db?.close(); db = null; coroutineScope.cancel() }
+    private fun isScreenLocked(): Boolean {
+        return try {
+            val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+            keyguardManager.isKeyguardLocked
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun destroyGestureStrip() {
+        gestureView?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (ex: Exception) {}
+        }
+        gestureView = null
+        gestureParams = null
+    }
+
+    private fun destroyPanel() {
+        appListPanel?.clearSearch()
+        itemTouchHelper?.attachToRecyclerView(null)
+        itemTouchHelper = null
+        panelView?.let {
+            it.setOnTouchListener(null)
+            (it as? ViewGroup)?.removeAllViews()
+            try {
+                windowManager.removeView(it)
+            } catch (ex: Exception) {}
+        }
+        panelView = null
+        panelParams = null
+        contentContainer = null
+        tilesRecyclerView = null
+        appsRecyclerView = null
+        tileAdapter = null
+        appAdapter = null
+    }
+
+    fun destroy() {
+        currentAnimator?.cancel()
+        currentAnimator = null
+        hideEditPanel()
+        destroyPanel()
+        destroyGestureStrip()
+        isPanelVisible = false
+        currentLevel = PanelLevel.HIDDEN
+        db?.close()
+        db = null
+        coroutineScope.cancel()
+    }
+
     private fun Int.dpToPx(): Int = (this * context.resources.displayMetrics.density).toInt()
 }
