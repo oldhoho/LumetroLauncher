@@ -49,8 +49,7 @@ class GroupedAppListAdapter(
         return when (items[position]) {
             is GroupItem.Header -> TYPE_HEADER
             is GroupItem.AppItem -> TYPE_APP
-            is GroupItem.FreezeButton -> TYPE_BUTTON
-            is GroupItem.SettingsButton -> TYPE_BUTTON
+            is GroupItem.FreezeButton, is GroupItem.SettingsButton -> TYPE_BUTTON
         }
     }
 
@@ -146,7 +145,7 @@ class GroupedAppListAdapter(
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         val item = items[position]
-        
+
         when {
             holder is HeaderViewHolder && item is GroupItem.Header -> {
                 holder.textView.text = item.letter
@@ -154,7 +153,7 @@ class GroupedAppListAdapter(
             holder is AppViewHolder && item is GroupItem.AppItem -> {
                 val app = item.app
                 holder.label.text = app.mName
-                
+
                 val isFrozen = app.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
                 holder.container.setBackgroundColor(if (isFrozen) Color.parseColor("#33AADDFF") else Color.TRANSPARENT)
                 holder.container.alpha = if (isFrozen) 0.6f else 1f
@@ -181,32 +180,44 @@ class GroupedAppListAdapter(
                 holder.container.setOnClickListener {
                     onAppClick(app)
                 }
+
                 holder.container.setOnLongClickListener {
                     onAppLongClick(app, holder.container)
                     true
                 }
             }
             holder is ButtonViewHolder -> {
-                when (position) {
-                    0 -> {
+                when (items[position]) {
+                    is GroupItem.FreezeButton -> {
                         holder.icon.setImageResource(android.R.drawable.ic_lock_lock)
                         holder.label.text = "❄ 一键冻结"
                         holder.container.setOnClickListener { onFreezeClick() }
                     }
-                    1 -> {
+                    is GroupItem.SettingsButton -> {
                         holder.icon.setImageResource(android.R.drawable.ic_menu_manage)
                         holder.label.text = "⚙ 设置"
                         holder.container.setOnClickListener { onSettingsClick() }
                     }
+                    else -> {}
                 }
             }
         }
     }
 
+    // ========== ViewHolder 类 ==========
     class HeaderViewHolder(val textView: TextView) : RecyclerView.ViewHolder(textView)
-    class AppViewHolder(val container: LinearLayout, val icon: ImageView, val label: TextView) : RecyclerView.ViewHolder(container)
-    class ButtonViewHolder(val container: LinearLayout, val icon: ImageView, val label: TextView) : RecyclerView.ViewHolder(container)
+    class AppViewHolder(
+        val container: LinearLayout,
+        val icon: ImageView,
+        val label: TextView
+    ) : RecyclerView.ViewHolder(container)
+    class ButtonViewHolder(
+        val container: LinearLayout,
+        val icon: ImageView,
+        val label: TextView
+    ) : RecyclerView.ViewHolder(container)
 
+    // ========== 扩展函数 ==========
     private fun Int.dpToPx(): Int {
         return (this * context.resources.displayMetrics.density).toInt()
     }

@@ -1,6 +1,7 @@
 package ru.queuejw.lumetro.components.core.sidebar
+
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import ru.queuejw.lumetro.components.core.sidebar.AppListPanel
 import net.sourceforge.pinyin4j.PinyinHelper
 import net.sourceforge.pinyin4j.format.HanyuPinyinCaseType
 import net.sourceforge.pinyin4j.format.HanyuPinyinOutputFormat
@@ -72,19 +73,33 @@ import java.text.Collator
 import java.util.Collections
 import java.util.Locale
 import ru.queuejw.lumetro.components.core.sidebar.GlassTileHelper
+import ru.queuejw.lumetro.components.freeform.WorkbenchOverlay
+import java.lang.ref.WeakReference
 
 class SidebarManager(private val context: Context) {
 
     enum class PanelLevel { HIDDEN, TILES, APPS }
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private var gestureView: View? = null
+    
+    // ========== 使用 WeakReference 防止内存泄漏 ==========
+    private var gestureViewRef: WeakReference<View>? = null
+    private var panelViewRef: WeakReference<FrameLayout>? = null
+    private var editPanelViewRef: WeakReference<FrameLayout>? = null
+    private var contentContainerRef: WeakReference<FrameLayout>? = null
+    private var tilesRecyclerViewRef: WeakReference<RecyclerView>? = null
+    private var appsRecyclerViewRef: WeakReference<RecyclerView>? = null
+    private var tileAdapterRef: WeakReference<TileAdapter>? = null
+    private var appAdapterRef: WeakReference<AppListAdapter>? = null
+    private var appListPanelRef: WeakReference<AppListPanel>? = null
+    private var itemTouchHelperRef: WeakReference<ItemTouchHelper>? = null
+    
     private var gestureParams: WindowManager.LayoutParams? = null
-    private var panelView: FrameLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
-    private var editPanelView: FrameLayout? = null
     private var editPanelParams: WindowManager.LayoutParams? = null
-    private var currentPopup: PopupWindow? = null
+    private var currentPopupRef: WeakReference<PopupWindow>? = null
+    private var currentAnimatorRef: WeakReference<ValueAnimator>? = null
+    
     private var isPanelVisible = false
     private var currentLevel = PanelLevel.HIDDEN
     private var currentLetter: String? = null
@@ -99,21 +114,17 @@ class SidebarManager(private val context: Context) {
     private val hiddenX = screenWidth
     private var swipeThreshold = 40.dpToPx()
 
-    private var gestureDownX = 0f; private var gestureDownY = 0f
-    private var gestureStartX = hiddenX; private var isGestureDragging = false
-    private var panelDownX = 0f; private var panelDownY = 0f
-    private var panelStartX = hiddenX; private var isPanelDragging = false
-    private var currentAnimator: ValueAnimator? = null
+    private var gestureDownX = 0f
+    private var gestureDownY = 0f
+    private var gestureStartX = hiddenX
+    private var isGestureDragging = false
+    private var panelDownX = 0f
+    private var panelDownY = 0f
+    private var panelStartX = hiddenX
+    private var isPanelDragging = false
     private var onPanelStateChangeListener: ((Boolean, PanelLevel) -> Unit)? = null
 
-    private var contentContainer: FrameLayout? = null
-    private var tilesRecyclerView: RecyclerView? = null
     private var panelBgBitmap: Bitmap? = null
-    private var appsRecyclerView: RecyclerView? = null
-    private var tileAdapter: TileAdapter? = null
-    private var appAdapter: AppListAdapter? = null
-    private var itemTouchHelper: ItemTouchHelper? = null
-    private var appListPanel: AppListPanel? = null
 
     private var cachedTiles = mutableListOf<TileEntity>()
     private var cachedApps = emptyList<App>()
@@ -178,172 +189,319 @@ class SidebarManager(private val context: Context) {
     private fun getWindowType() = if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY else WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
 
     fun configureTouchPassthrough() {
-        gestureParams?.let { it.flags = it.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL; gestureView?.let { v -> try { windowManager.updateViewLayout(v, it) } catch (e: Exception) {} } }
+        gestureParams?.let { 
+            it.flags = it.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            gestureViewRef?.get()?.let { v -> 
+                try { 
+                    windowManager.updateViewLayout(v, it) 
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "configureTouchPassthrough failed", e)
+                }
+            }
+        }
     }
 
-    private fun showPopup(pw: PopupWindow, a: View) {
-        pw.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
-        val loc = IntArray(2); a.getLocationOnScreen(loc)
-        pw.showAtLocation(a, Gravity.NO_GRAVITY, loc[0], loc[1] + a.height)
+    private fun showPopup(pw: PopupWindow, anchor: View) {
+        try {
+            pw.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
+            val loc = IntArray(2)
+            anchor.getLocationOnScreen(loc)
+            pw.showAtLocation(anchor, Gravity.NO_GRAVITY, loc[0], loc[1] + anchor.height)
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "showPopup failed", e)
+        }
     }
 
     fun createGestureStrip() {
-        if (gestureView != null) destroyGestureStrip()
+        destroyGestureStrip()
         val h = if (prefs.gestureStripHeight > 0) prefs.gestureStripHeight.dpToPx() else WindowManager.LayoutParams.MATCH_PARENT
         gestureParams = WindowManager.LayoutParams(prefs.gestureStripWidth.dpToPx(), h, getWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.RIGHT or Gravity.TOP; x = 0; y = prefs.gestureStripOffset.dpToPx() }
-        gestureView = View(context).apply {
+        ).apply { 
+            gravity = Gravity.RIGHT or Gravity.TOP
+            x = 0
+            y = prefs.gestureStripOffset.dpToPx()
+        }
+        val view = View(context).apply {
             setBackgroundColor(((prefs.gestureStripAlpha * 255).toInt() shl 24) or 0xFFFFFF)
             setOnTouchListener { _, e -> handleGesture(e) }
-            isFocusable = false; isClickable = false; isLongClickable = false; setWillNotDraw(true)
+            isFocusable = false
+            isClickable = false
+            isLongClickable = false
+            setWillNotDraw(true)
         }
-        try { windowManager.addView(gestureView, gestureParams) } catch (e: Exception) { Log.e("SidebarManager", "Failed to add gesture view", e) }
+        gestureViewRef = WeakReference(view)
+        try { 
+            windowManager.addView(view, gestureParams) 
+        } catch (e: Exception) { 
+            Log.e("SidebarManager", "Failed to add gesture view", e)
+        }
     }
 
-    private fun handleGesture(e: MotionEvent): Boolean {
+    fun handleGesture(e: MotionEvent): Boolean {
         try {
-            val rx = e.rawX; val ry = e.rawY
+            val rx = e.rawX
+            val ry = e.rawY
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> { 
-    gestureDownX = rx; 
-    gestureDownY = ry; 
-    gestureStartX = panelParams?.x ?: tilesX; 
-    return true 
-}
+                MotionEvent.ACTION_DOWN -> {
+                    gestureDownX = rx
+                    gestureDownY = ry
+                    gestureStartX = panelParams?.x ?: tilesX
+                    return true
+                }
                 MotionEvent.ACTION_MOVE -> {
-    // 锁屏时禁止手势
-    if (isScreenLocked()) {
-        return true
-    }
-    val dx = rx - gestureDownX
-    if (!isGestureDragging && Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(ry - gestureDownY)) {
-        isGestureDragging = true
-                        if (!isPanelVisible) { createPanel(); try { windowManager.addView(panelView, panelParams) } catch (e: Exception) { Log.e("SidebarManager", "addView failed", e) }; isPanelVisible = true; gestureStartX = hiddenX }
+                    if (isScreenLocked()) {
+                        return true
                     }
-                    if (isGestureDragging) { panelParams?.x = (gestureStartX + dx).toInt().coerceIn(if (currentLevel == PanelLevel.APPS) tilesX else appsX, hiddenX); panelView?.let { windowManager.updateViewLayout(it, panelParams) } }
+                    val dx = rx - gestureDownX
+                    if (!isGestureDragging && Math.abs(dx) > touchSlop && Math.abs(dx) > Math.abs(ry - gestureDownY)) {
+                        isGestureDragging = true
+                        if (!isPanelVisible) {
+                            createPanel()
+                            panelViewRef?.get()?.let { panelView ->
+                                try {
+                                    windowManager.addView(panelView, panelParams)
+                                    isPanelVisible = true
+                                    gestureStartX = hiddenX
+                                } catch (e: Exception) {
+                                    Log.e("SidebarManager", "addView failed", e)
+                                    isGestureDragging = false
+                                    return true
+                                }
+                            } ?: run {
+                                isGestureDragging = false
+                                return true
+                            }
+                        }
+                    }
+                    if (isGestureDragging) {
+                        val currentParams = panelParams
+                        if (currentParams != null) {
+                            currentParams.x = (gestureStartX + dx).toInt().coerceIn(
+                                if (currentLevel == PanelLevel.APPS) tilesX else appsX,
+                                hiddenX
+                            )
+                            panelViewRef?.get()?.let { panelView ->
+                                try {
+                                    windowManager.updateViewLayout(panelView, currentParams)
+                                } catch (e: Exception) {
+                                    Log.e("SidebarManager", "updateViewLayout failed", e)
+                                }
+                            }
+                        }
+                    }
                     return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (isGestureDragging && isPanelVisible) {
-                        val cx = panelParams?.x ?: hiddenX; val tdx = rx - gestureDownX
+                        val cx = panelParams?.x ?: hiddenX
+                        val tdx = rx - gestureDownX
                         when {
-                            tdx < -swipeThreshold -> when (currentLevel) { PanelLevel.HIDDEN -> anim(tilesX, PanelLevel.TILES); PanelLevel.TILES -> anim(appsX, PanelLevel.APPS); else -> {} }
-                            tdx > swipeThreshold -> when (currentLevel) { PanelLevel.APPS -> anim(hiddenX, PanelLevel.HIDDEN); PanelLevel.TILES -> anim(hiddenX, PanelLevel.HIDDEN); else -> {} }
-                            else -> { if (cx > (tilesX + hiddenX) / 2) anim(hiddenX, PanelLevel.HIDDEN) else anim(tilesX, PanelLevel.TILES) }
+                            tdx < -swipeThreshold -> when (currentLevel) {
+                                PanelLevel.HIDDEN -> anim(tilesX, PanelLevel.TILES)
+                                PanelLevel.TILES -> anim(appsX, PanelLevel.APPS)
+                                else -> {}
+                            }
+                            tdx > swipeThreshold -> when (currentLevel) {
+                                PanelLevel.APPS -> anim(hiddenX, PanelLevel.HIDDEN)
+                                PanelLevel.TILES -> anim(hiddenX, PanelLevel.HIDDEN)
+                                else -> {}
+                            }
+                            else -> {
+                                if (cx > (tilesX + hiddenX) / 2) anim(hiddenX, PanelLevel.HIDDEN)
+                                else anim(tilesX, PanelLevel.TILES)
+                            }
                         }
                     }
-                    gestureDownX = 0f; gestureDownY = 0f; isGestureDragging = false; return true
+                    gestureDownX = 0f
+                    gestureDownY = 0f
+                    isGestureDragging = false
+                    return true
                 }
             }
-        } catch (e: Exception) { Log.e("SidebarManager", "Gesture error", e) }
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "Gesture error", e)
+        }
         return false
     }
 
     fun createPanel() {
-    if (panelView != null) return
-    panelParams = WindowManager.LayoutParams(appsWidth, WindowManager.LayoutParams.MATCH_PARENT, getWindowType(),
-        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-        PixelFormat.TRANSLUCENT).apply { gravity = Gravity.LEFT or Gravity.TOP; x = appsX; y = 0 }
-    contentContainer = FrameLayout(context).apply {
-        layoutParams = FrameLayout.LayoutParams(tilesWidth, FrameLayout.LayoutParams.MATCH_PARENT)
-        try {
-            if (prefs.panelBackgroundImage.isEmpty()) setBackgroundColor(Color.parseColor(prefs.panelBackgroundColor))
-            alpha = prefs.panelBackgroundAlpha
+        if (panelViewRef?.get() != null) return
+        
+        panelParams = WindowManager.LayoutParams(appsWidth, WindowManager.LayoutParams.MATCH_PARENT, getWindowType(),
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.LEFT or Gravity.TOP
+            x = appsX
+            y = 0
         }
-        catch (ex: Exception) { setBackgroundColor(Color.DKGRAY) }
-        val bg = prefs.panelBackgroundImage
-        if (bg.isNotEmpty()) {
+        
+        val contentContainer = FrameLayout(context).apply {
+            layoutParams = FrameLayout.LayoutParams(tilesWidth, FrameLayout.LayoutParams.MATCH_PARENT)
             try {
-                val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
-                val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
-                if (bm != null) {
-    panelBgBitmap = bm
-    val screenHeight = context.resources.displayMetrics.heightPixels
-    val scale = Math.max(tilesWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
-    val scaledWidth = (bm.width * scale).toInt()
-    val scaledHeight = (bm.height * scale).toInt()
-    val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
-    val x = (scaledWidth - tilesWidth) / 2
-    val y = (scaledHeight - screenHeight) / 2
-    val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), tilesWidth, screenHeight)
-    this.background = BitmapDrawable(context.resources, cropped)
-}
-            } catch (e: Exception) {}
-        }
-        // 液态玻璃效果（Android 13+）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            try {
-                val resId = context.resources.getIdentifier("liquid_glass_shader", "raw", context.packageName)
-                if (resId != 0) {
-                    val inputStream = context.resources.openRawResource(resId)
-                    val shaderString = inputStream.bufferedReader().use { it.readText() }
-                    val shader = RuntimeShader(shaderString)
-                    loadPanelBgBitmap()?.let { bgBitmap ->
-                        val bitmapShader = BitmapShader(bgBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                        shader.setInputShader("content", bitmapShader)
-                        shader.setFloatUniform("size", width.toFloat(), height.toFloat())
-                        shader.setFloatUniform("offset", 0f, 0f)
-                        shader.setFloatUniform("cornerRadii", 16f, 16f, 16f, 16f)
-                        shader.setFloatUniform("refractionHeight", 24f)
-                        shader.setFloatUniform("refractionAmount", 0.5f)
-                        shader.setFloatUniform("depthEffect", 1.0f)
-                        val effect = RenderEffect.createRuntimeShaderEffect(shader, "content")
-                        setRenderEffect(effect)
+                if (prefs.panelBackgroundImage.isEmpty()) {
+                    setBackgroundColor(Color.parseColor(prefs.panelBackgroundColor))
+                }
+                alpha = prefs.panelBackgroundAlpha
+            } catch (ex: Exception) {
+                setBackgroundColor(Color.DKGRAY)
+            }
+            val bg = prefs.panelBackgroundImage
+            if (bg.isNotEmpty()) {
+                try {
+                    val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
+                    val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                    if (bm != null) {
+                        panelBgBitmap = bm
+                        val screenHeight = context.resources.displayMetrics.heightPixels
+                        val scale = Math.max(tilesWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
+                        val scaledWidth = (bm.width * scale).toInt()
+                        val scaledHeight = (bm.height * scale).toInt()
+                        val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
+                        val x = (scaledWidth - tilesWidth) / 2
+                        val y = (scaledHeight - screenHeight) / 2
+                        val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), tilesWidth, screenHeight)
+                        this.background = BitmapDrawable(context.resources, cropped)
                     }
-                }
-            } catch (e: Exception) {
-                Log.e("SidebarManager", "Liquid glass effect failed", e)
-            }
-        }
-    }
-    panelView = object : FrameLayout(context) {
-        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-            when (ev.action) {
-                MotionEvent.ACTION_DOWN -> { panelDownX = ev.rawX; panelDownY = ev.rawY; panelStartX = panelParams?.x ?: hiddenX; isPanelDragging = false; return false }
-                MotionEvent.ACTION_MOVE -> {
-                    if (!isPanelDragging) { val adx = Math.abs(ev.rawX - panelDownX); if (adx > touchSlop && adx > Math.abs(ev.rawY - panelDownY)) { isPanelDragging = true; return true } }
-                    return isPanelDragging
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "Failed to load panel background", e)
                 }
             }
-            return false
-        }
-        override fun onTouchEvent(event: MotionEvent): Boolean {
-            when (event.action) {
-                MotionEvent.ACTION_MOVE -> {
-                    if (isPanelDragging) { panelParams?.x = (panelStartX + event.rawX - panelDownX).toInt().coerceIn(if (currentLevel == PanelLevel.APPS) tilesX else appsX, hiddenX); panelView?.let { windowManager.updateViewLayout(it, panelParams) }; return true }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (isPanelDragging) {
-                        val cx = panelParams?.x ?: hiddenX; val dx = event.rawX - panelDownX
-                        when {
-                            dx < -swipeThreshold -> when (currentLevel) { PanelLevel.HIDDEN -> anim(tilesX, PanelLevel.TILES); PanelLevel.TILES -> anim(appsX, PanelLevel.APPS); else -> {} }
-                            dx > swipeThreshold -> when (currentLevel) { PanelLevel.APPS -> anim(hiddenX, PanelLevel.HIDDEN); PanelLevel.TILES -> anim(hiddenX, PanelLevel.HIDDEN); else -> {} }
-                            else -> { if (cx > (tilesX + hiddenX) / 2) anim(hiddenX, PanelLevel.HIDDEN) else anim(tilesX, PanelLevel.TILES) }
+            // 液态玻璃效果（Android 13+）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    val resId = context.resources.getIdentifier("liquid_glass_shader", "raw", context.packageName)
+                    if (resId != 0) {
+                        val inputStream = context.resources.openRawResource(resId)
+                        val shaderString = inputStream.bufferedReader().use { it.readText() }
+                        val shader = RuntimeShader(shaderString)
+                        loadPanelBgBitmap()?.let { bgBitmap ->
+                            val bitmapShader = BitmapShader(bgBitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+                            shader.setInputShader("content", bitmapShader)
+                            shader.setFloatUniform("size", width.toFloat(), height.toFloat())
+                            shader.setFloatUniform("offset", 0f, 0f)
+                            shader.setFloatUniform("cornerRadii", 16f, 16f, 16f, 16f)
+                            shader.setFloatUniform("refractionHeight", 24f)
+                            shader.setFloatUniform("refractionAmount", 0.5f)
+                            shader.setFloatUniform("depthEffect", 1.0f)
+                            val effect = RenderEffect.createRuntimeShaderEffect(shader, "content")
+                            setRenderEffect(effect)
                         }
-                        isPanelDragging = false; return true
+                    }
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "Liquid glass effect failed", e)
+                }
+            }
+        }
+        contentContainerRef = WeakReference(contentContainer)
+        
+        val panelView = object : FrameLayout(context) {
+            override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                when (ev.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        panelDownX = ev.rawX
+                        panelDownY = ev.rawY
+                        panelStartX = panelParams?.x ?: hiddenX
+                        isPanelDragging = false
+                        return false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (!isPanelDragging) {
+                            val adx = Math.abs(ev.rawX - panelDownX)
+                            if (adx > touchSlop && adx > Math.abs(ev.rawY - panelDownY)) {
+                                isPanelDragging = true
+                                return true
+                            }
+                        }
+                        return isPanelDragging
                     }
                 }
-                MotionEvent.ACTION_OUTSIDE -> { if (currentLevel != PanelLevel.HIDDEN) anim(hiddenX, PanelLevel.HIDDEN); return true }
+                return false
             }
-            return super.onTouchEvent(event)
+            
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                when (event.action) {
+                    MotionEvent.ACTION_MOVE -> {
+                        if (isPanelDragging) {
+                            val currentParams = panelParams
+                            if (currentParams != null) {
+                                currentParams.x = (panelStartX + event.rawX - panelDownX).toInt().coerceIn(
+                                    if (currentLevel == PanelLevel.APPS) tilesX else appsX,
+                                    hiddenX
+                                )
+                                try {
+                                    windowManager.updateViewLayout(this, currentParams)
+                                } catch (e: Exception) {
+                                    Log.e("SidebarManager", "updateViewLayout in touch failed", e)
+                                }
+                            }
+                            return true
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        if (isPanelDragging) {
+                            val cx = panelParams?.x ?: hiddenX
+                            val dx = event.rawX - panelDownX
+                            when {
+                                dx < -swipeThreshold -> when (currentLevel) {
+                                    PanelLevel.HIDDEN -> anim(tilesX, PanelLevel.TILES)
+                                    PanelLevel.TILES -> anim(appsX, PanelLevel.APPS)
+                                    else -> {}
+                                }
+                                dx > swipeThreshold -> when (currentLevel) {
+                                    PanelLevel.APPS -> anim(hiddenX, PanelLevel.HIDDEN)
+                                    PanelLevel.TILES -> anim(hiddenX, PanelLevel.HIDDEN)
+                                    else -> {}
+                                }
+                                else -> {
+                                    if (cx > (tilesX + hiddenX) / 2) anim(hiddenX, PanelLevel.HIDDEN)
+                                    else anim(tilesX, PanelLevel.TILES)
+                                }
+                            }
+                            isPanelDragging = false
+                            return true
+                        }
+                    }
+                    MotionEvent.ACTION_OUTSIDE -> {
+                        if (currentLevel != PanelLevel.HIDDEN) anim(hiddenX, PanelLevel.HIDDEN)
+                        return true
+                    }
+                }
+                return super.onTouchEvent(event)
+            }
+        }.apply { addView(contentContainer) }
+        panelViewRef = WeakReference(panelView)
+        
+        if (cachedTiles.isEmpty()) {
+            coroutineScope.launch(Dispatchers.IO) {
+                val fresh = TileDatabase.getTileData(context.applicationContext).getTilesDao().getTilesData()
+                cachedTiles.clear()
+                cachedTiles.addAll(fresh.filter { it.tileType != -1 })
+                withContext(Dispatchers.Main) { loadTilesContent() }
+            }
         }
-    }.apply { addView(contentContainer) }
-    if (cachedTiles.isEmpty()) { coroutineScope.launch(Dispatchers.IO) { val fresh = TileDatabase.getTileData(context.applicationContext).getTilesDao().getTilesData(); cachedTiles.clear(); cachedTiles.addAll(fresh.filter { it.tileType != -1 }); withContext(Dispatchers.Main) { loadTilesContent() } } }
-    loadTilesContent()
-}
+        loadTilesContent()
+    }
 
     private fun loadPanelBgBitmap(): Bitmap? {
         val bg = prefs.panelBackgroundImage
-        if (bg.isEmpty() && prefs.panelBackgroundImage.isEmpty()) return null
+        if (bg.isEmpty()) return null
         return try {
             val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
             BitmapFactory.decodeByteArray(raw, 0, raw.size)
         } catch (e: Exception) { null }
     }
+    
     private fun loadTilesContent() {
-    val ct = contentContainer ?: return; ct.removeAllViews()
+    val contentContainer = contentContainerRef?.get()
+    if (contentContainer == null) {
+        Log.e("SidebarManager", "loadTilesContent: contentContainer is null")
+        return
+    }
+    contentContainer.removeAllViews()
+    
     val weatherCity = context.getSharedPreferences("weather", Context.MODE_PRIVATE).getString("city", "北京") ?: "北京"
     if (cachedTiles.none { it.tileType == -2 }) {
         cachedTiles.add(0, TileEntity(tilePosition = -1, tileColor = null, tileCornerRadius = -1, tileType = -2, tileSize = 3, tileLabel = weatherCity, tilePackage = null))
@@ -351,65 +509,108 @@ class SidebarManager(private val context: Context) {
     if (cachedTiles.none { it.tileType == -2 }) {
         cachedTiles.add(0, TileEntity(tilePosition = -1, tileColor = null, tileCornerRadius = -1, tileType = -2, tileSize = 2, tileLabel = "天气", tilePackage = null))
     }
+    
     if (cachedTiles.isEmpty()) {
-        ct.addView(TextView(context).apply { text = "暂无磁贴\n\n从应用列表中长按固定"; textSize = 22f; setTextColor(Color.WHITE); gravity = Gravity.CENTER })
-        tilesRecyclerView = null; return
+        contentContainer.addView(TextView(context).apply {
+            text = "暂无磁贴\n\n从应用列表中长按固定"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+        })
+        tilesRecyclerViewRef = null
+        return
     }
-    tilesRecyclerView = RecyclerView(context).apply {
+    
+    val recyclerView = RecyclerView(context).apply {
         layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        setPadding(0, 0, 0, 0); clipToPadding = false; itemAnimator = null; adapter = null; setHasFixedSize(true)
+        setPadding(0, 0, 0, 0)
+        clipToPadding = false
+        itemAnimator = null
+        adapter = null
+        setHasFixedSize(true)
     }
+    tilesRecyclerViewRef = WeakReference(recyclerView)
+    
     val lm = SpannedGridLayoutManager(RecyclerView.VERTICAL, 8, 4).apply {
-        spanSizeLookup = SpannedGridLayoutManager.SpanSizeLookup { p -> when (cachedTiles.getOrNull(p)?.tileSize) { 1 -> SpanSize(1, 2); 2 -> SpanSize(2, 1); 3 -> SpanSize(2, 2); 4 -> SpanSize(4, 2); else -> SpanSize(1, 1) } }
+        spanSizeLookup = SpannedGridLayoutManager.SpanSizeLookup { p ->
+            when (cachedTiles.getOrNull(p)?.tileSize) {
+                1 -> SpanSize(1, 2)
+                2 -> SpanSize(2, 1)
+                3 -> SpanSize(2, 2)
+                4 -> SpanSize(4, 2)
+                else -> SpanSize(1, 1)
+            }
+        }
     }
-    cachedTiles.forEach { t -> t.tilePackage?.let { iconLoader.getIconForPackage(context, it) } }
-    tileAdapter = TileAdapter(cachedTiles, 48.dpToPx())
-    tilesRecyclerView?.layoutManager = lm; tilesRecyclerView?.adapter = tileAdapter
-    ct.addView(tilesRecyclerView); setupDragAndDrop()
+    cachedTiles.forEach { t ->
+        t.tilePackage?.let { iconLoader.getIconForPackage(context, it) }
+    }
+    val adapter = TileAdapter(cachedTiles, 48.dpToPx())
+    tileAdapterRef = WeakReference(adapter)
+    recyclerView.layoutManager = lm
+    recyclerView.adapter = adapter
+    contentContainer.addView(recyclerView)
+    setupDragAndDrop()
 }
 
 private fun setupDragAndDrop() {
-    itemTouchHelper?.attachToRecyclerView(null)
-    itemTouchHelper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
-    override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
-        // 锁定或非编辑模式 → 禁止拖动
-        if (prefs.tilesLocked || !isEditMode) {
-            return makeMovementFlags(0, 0)
+    val recyclerView = tilesRecyclerViewRef?.get()
+    if (recyclerView == null) {
+        Log.e("SidebarManager", "setupDragAndDrop: recyclerView is null")
+        return
+    }
+    
+    // 清理旧的 ItemTouchHelper
+    val oldHelper = itemTouchHelperRef?.get()
+    oldHelper?.attachToRecyclerView(null)
+    
+    val helper = ItemTouchHelper(object : ItemTouchHelper.Callback() {
+        override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
+            if (prefs.tilesLocked || !isEditMode) {
+                return makeMovementFlags(0, 0)
+            }
+            return makeMovementFlags(
+                ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
+                0
+            )
         }
-        return makeMovementFlags(
-            ItemTouchHelper.UP or ItemTouchHelper.DOWN or ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT,
-            0
-        )
-    }
 
-    override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, t: RecyclerView.ViewHolder): Boolean {
-        // 锁定或非编辑模式 → 禁止移动
-        if (prefs.tilesLocked || !isEditMode) return false
+        override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
+            if (prefs.tilesLocked || !isEditMode) return false
 
-        val fp = vh.bindingAdapterPosition
-        val tp = t.bindingAdapterPosition
-        if (isFrozen(cachedTiles[fp]) || isFrozen(cachedTiles[tp])) return false
-        if (fp < tp) {
-            for (i in fp until tp) Collections.swap(cachedTiles, i, i + 1)
-        } else {
-            for (i in fp downTo tp + 1) Collections.swap(cachedTiles, i, i - 1)
+            val fromPos = vh.bindingAdapterPosition
+            val toPos = target.bindingAdapterPosition
+            if (fromPos < 0 || toPos < 0) return false
+            if (isFrozen(cachedTiles[fromPos]) || isFrozen(cachedTiles[toPos])) return false
+            
+            if (fromPos < toPos) {
+                for (i in fromPos until toPos) Collections.swap(cachedTiles, i, i + 1)
+            } else {
+                for (i in fromPos downTo toPos + 1) Collections.swap(cachedTiles, i, i - 1)
+            }
+            tileAdapterRef?.get()?.notifyItemMoved(fromPos, toPos)
+            return true
         }
-        tileAdapter?.notifyItemMoved(fp, tp)
-        return true
-    }
 
-    override fun onSwiped(vh: RecyclerView.ViewHolder, d: Int) {}
+        override fun onSwiped(vh: RecyclerView.ViewHolder, direction: Int) {}
 
-    override fun isLongPressDragEnabled(): Boolean {
-        // 锁定或非编辑模式 → 禁止长按拖动
-        return !prefs.tilesLocked && isEditMode
-    }
+        override fun isLongPressDragEnabled(): Boolean {
+            return !prefs.tilesLocked && isEditMode
+        }
 
-    override fun clearView(rv: RecyclerView, vh: RecyclerView.ViewHolder) {
-        super.clearView(rv, vh)
-        // 只有非锁定状态才保存
-        if (prefs.tilesLocked) return
-        coroutineScope.launch(Dispatchers.IO) {
+        override fun clearView(rv: RecyclerView, vh: RecyclerView.ViewHolder) {
+            super.clearView(rv, vh)
+            if (prefs.tilesLocked) return
+            saveTilePositions()
+        }
+    })
+    helper.attachToRecyclerView(recyclerView)
+    itemTouchHelperRef = WeakReference(helper)
+}
+
+private fun saveTilePositions() {
+    coroutineScope.launch(Dispatchers.IO) {
+        try {
             val dao = db?.getTilesDao()
             val all = dao?.getTilesData()?.toMutableList() ?: return@launch
             cachedTiles.forEachIndexed { i, t ->
@@ -424,62 +625,69 @@ private fun setupDragAndDrop() {
             normal.forEachIndexed { i, t -> t.tilePosition = i }
             special.forEachIndexed { i, t -> t.tilePosition = -(i + 1) }
             dao.updateAllTiles(merged)
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "saveTilePositions failed", e)
         }
     }
-})
-    itemTouchHelper?.attachToRecyclerView(tilesRecyclerView)
 }
 
 fun refreshPanelBackground() {
     val bg = prefs.panelBackgroundImage
-    if (bg.isNotEmpty()) {
-        try {
-            val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
-            val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
-            if (bm != null) {
-    panelBgBitmap = bm
-    val screenHeight = context.resources.displayMetrics.heightPixels
-    val scale = Math.max(appsWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
-    val scaledWidth = (bm.width * scale).toInt()
-    val scaledHeight = (bm.height * scale).toInt()
-    val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
-    val x = (scaledWidth - appsWidth) / 2
-    val y = (scaledHeight - screenHeight) / 2
-    val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), appsWidth, screenHeight)
-    contentContainer?.background = BitmapDrawable(context.resources, cropped)
-}
-        } catch (e: Exception) {}
+    if (bg.isEmpty()) return
+    val contentContainer = contentContainerRef?.get() ?: return
+    try {
+        val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
+        val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+        if (bm != null) {
+            panelBgBitmap = bm
+            val screenHeight = context.resources.displayMetrics.heightPixels
+            val scale = Math.max(appsWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
+            val scaledWidth = (bm.width * scale).toInt()
+            val scaledHeight = (bm.height * scale).toInt()
+            val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
+            val x = (scaledWidth - appsWidth) / 2
+            val y = (scaledHeight - screenHeight) / 2
+            val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), appsWidth, screenHeight)
+            contentContainer.background = BitmapDrawable(context.resources, cropped)
+        }
+    } catch (e: Exception) {
+        Log.e("SidebarManager", "refreshPanelBackground failed", e)
     }
 }
 
 fun refreshTilesIfNeeded() {
-    // 锁定状态下禁止刷新时重新添加
     if (prefs.tilesLocked) return
     coroutineScope.launch(Dispatchers.IO) {
-        val all = db?.getTilesDao()?.getTilesData() ?: return@launch
-        val validTiles = all.filter { it.tileType != -1 }
-        validTiles.forEach { t -> t.tilePackage?.let { iconLoader.getIconForPackage(context, it) } }
-        withContext(Dispatchers.Main) {
-            cachedTiles.clear()
-            cachedTiles.addAll(validTiles)
-            tileAdapter = TileAdapter(cachedTiles, 48.dpToPx())
-            tilesRecyclerView?.adapter = tileAdapter
-            if (cachedTiles.isEmpty() && currentLevel == PanelLevel.TILES) loadTilesContent()
+        try {
+            val all = db?.getTilesDao()?.getTilesData() ?: return@launch
+            val validTiles = all.filter { it.tileType != -1 }
+            validTiles.forEach { t ->
+                t.tilePackage?.let { iconLoader.getIconForPackage(context, it) }
+            }
+            withContext(Dispatchers.Main) {
+                cachedTiles.clear()
+                cachedTiles.addAll(validTiles)
+                val adapter = TileAdapter(cachedTiles, 48.dpToPx())
+                tileAdapterRef = WeakReference(adapter)
+                tilesRecyclerViewRef?.get()?.adapter = adapter
+                if (cachedTiles.isEmpty() && currentLevel == PanelLevel.TILES) loadTilesContent()
+            }
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "refreshTilesIfNeeded failed", e)
         }
     }
 }
 
 fun onAppInstalled(pkg: String) {
-    // 锁定状态下禁止自动添加
     if (prefs.tilesLocked) return
     if (!prefs.autoPinEnabled) return
     coroutineScope.launch(Dispatchers.IO) {
-        val dao = db?.getTilesDao()
-        val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
-        val slot = tiles.indexOfFirst { it.tileType == -1 }
-        if (slot >= 0) {
-            if (tiles.any { it.tilePackage == pkg && it.tileType != -1 }) return@launch
-            try {
+        try {
+            val dao = db?.getTilesDao()
+            val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
+            val slot = tiles.indexOfFirst { it.tileType == -1 }
+            if (slot >= 0) {
+                if (tiles.any { it.tilePackage == pkg && it.tileType != -1 }) return@launch
                 val appInfo = packageManager.getApplicationInfo(pkg, 0)
                 val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
                 if (packageManager.queryIntentActivities(intent, 0).isEmpty()) return@launch
@@ -489,231 +697,410 @@ fun onAppInstalled(pkg: String) {
                 withContext(Dispatchers.Main) {
                     refreshTilesIfNeeded()
                 }
-            } catch (e: Exception) {
-                // 忽略
             }
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "onAppInstalled failed", e)
         }
     }
 }
 
 fun onAppRemoved(pkg: String) {
-    // 锁定状态下禁止移除磁贴
     if (prefs.tilesLocked) return
     coroutineScope.launch(Dispatchers.IO) {
-        val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
-        tiles.indexOfFirst { it.tilePackage == pkg }.takeIf { it >= 0 }?.let { idx ->
-            tiles[idx] = TileEntity(tiles[idx].id, idx, null, -1, -1, 0, null, null)
-            dao.updateAllTiles(tiles); withContext(Dispatchers.Main) { refreshTilesIfNeeded() }
+        try {
+            val dao = db?.getTilesDao()
+            val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
+            tiles.indexOfFirst { it.tilePackage == pkg }.takeIf { it >= 0 }?.let { idx ->
+                tiles[idx] = TileEntity(tiles[idx].id, idx, null, -1, -1, 0, null, null)
+                dao.updateAllTiles(tiles)
+                withContext(Dispatchers.Main) { refreshTilesIfNeeded() }
+            }
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "onAppRemoved failed", e)
         }
     }
 }
 
 fun refreshAppsIfNeeded() {
     coroutineScope.launch {
-        cachedApps = withContext(Dispatchers.IO) {
-            val pm = context.packageManager
-            val all = pm.getInstalledApplications(PackageManager.GET_META_DATA or PackageManager.GET_DISABLED_COMPONENTS)
-            if (!isActive) return@withContext emptyList<App>()
-            val list = ArrayList<App>()
-            for (info in all) {
-                if (info.packageName == context.packageName) continue
-                val activities = pm.queryIntentActivities(
-                    Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(info.packageName),
-                    PackageManager.GET_DISABLED_COMPONENTS
-                )
-                if (activities.isEmpty()) continue
-                list.add(App(info.loadLabel(packageManager).toString(), info.packageName, 0))
+        try {
+            cachedApps = withContext(Dispatchers.IO) {
+                val pm = context.packageManager
+                val all = pm.getInstalledApplications(PackageManager.GET_META_DATA or PackageManager.GET_DISABLED_COMPONENTS)
+                if (!isActive) return@withContext emptyList<App>()
+                val list = ArrayList<App>()
+                for (info in all) {
+                    if (info.packageName == context.packageName) continue
+                    val activities = pm.queryIntentActivities(
+                        Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(info.packageName),
+                        PackageManager.GET_DISABLED_COMPONENTS
+                    )
+                    if (activities.isEmpty()) continue
+                    list.add(App(info.loadLabel(packageManager).toString(), info.packageName, 0))
+                }
+                list
             }
-            list
+            sortedCachedApps = sortApps(cachedApps)
+            appAdapterRef?.get()?.updateData(filteredApps())
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "refreshAppsIfNeeded failed", e)
         }
-        sortedCachedApps = sortApps(cachedApps)
-        appAdapter?.updateData(filteredApps())
     }
 }
 
 // ===== TileAdapter =====
-inner class TileAdapter(private var tiles: List<TileEntity>, private val iconSize: Int) : RecyclerView.Adapter<TileAdapter.VH>() {
-    inner class VH(val c: FrameLayout, val icon: ImageView, val label: TextView, val back: FrameLayout, val backLabel: TextView) : RecyclerView.ViewHolder(c)
-    fun updateData(t: List<TileEntity>) { if (t != tiles) { tiles = t; notifyDataSetChanged() } }
-    override fun onCreateViewHolder(p: android.view.ViewGroup, vt: Int): VH {
-        val outer = FrameLayout(p.context).apply {
-            layoutParams = RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, RecyclerView.LayoutParams.WRAP_CONTENT)
+inner class TileAdapter(private var tiles: List<TileEntity>, private val iconSize: Int) : RecyclerView.Adapter<TileAdapter.ViewHolder>() {
+    
+    inner class ViewHolder(
+        val container: FrameLayout,
+        val icon: ImageView,
+        val label: TextView,
+        val back: FrameLayout,
+        val backLabel: TextView
+    ) : RecyclerView.ViewHolder(container)
+    
+    fun updateData(t: List<TileEntity>) {
+        if (t != tiles) {
+            tiles = t
+            notifyDataSetChanged()
+        }
+    }
+    
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val outer = FrameLayout(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                RecyclerView.LayoutParams.MATCH_PARENT,
+                RecyclerView.LayoutParams.WRAP_CONTENT
+            )
             setPadding(3, 3, 3, 3)
         }
-        val front = FrameLayout(p.context).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        val front = FrameLayout(parent.context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
             visibility = View.VISIBLE
         }
-        val iv = ImageView(p.context).apply {
-            layoutParams = FrameLayout.LayoutParams(iconSize, iconSize).apply { gravity = Gravity.CENTER }
+        val iv = ImageView(parent.context).apply {
+            layoutParams = FrameLayout.LayoutParams(iconSize, iconSize).apply {
+                gravity = Gravity.CENTER
+            }
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        val tv = TextView(p.context).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+        val tv = TextView(parent.context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
                 gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
                 bottomMargin = 2.dpToPx()
             }
-            textSize = 10f; setTextColor(Color.WHITE); maxLines = 1
-            setShadowLayer(2f, 0f, 1f, Color.BLACK); gravity = Gravity.CENTER
+            textSize = 10f
+            setTextColor(Color.WHITE)
+            maxLines = 1
+            setShadowLayer(2f, 0f, 1f, Color.BLACK)
+            gravity = Gravity.CENTER
         }
-        front.addView(iv); front.addView(tv)
-        val back = FrameLayout(p.context).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        front.addView(iv)
+        front.addView(tv)
+        
+        val back = FrameLayout(parent.context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
             visibility = View.GONE
             setBackgroundColor(Color.parseColor("#AA000000"))
         }
-        val backLabel = TextView(p.context).apply {
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply { gravity = Gravity.CENTER }
-            textSize = 16f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; maxLines = 4; setTypeface(null, android.graphics.Typeface.BOLD)
+        val backLabel = TextView(parent.context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ).apply { gravity = Gravity.CENTER }
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            maxLines = 4
+            setTypeface(null, android.graphics.Typeface.BOLD)
         }
         back.addView(backLabel)
-        outer.addView(front); outer.addView(back)
-        return VH(outer, iv, tv, back, backLabel)
+        outer.addView(front)
+        outer.addView(back)
+        return ViewHolder(outer, iv, tv, back, backLabel)
     }
-    override fun onBindViewHolder(h: VH, pos: Int) {
-    val t = tiles[pos]; h.label.text = t.tileLabel ?: ""; h.icon.visibility = View.VISIBLE
-    val bg = try { t.tileColor?.let { Color.parseColor(it) } ?: Color.parseColor("#FF0050EF") } catch (ex: Exception) { Color.parseColor("#FF0050EF") }
-        if (t.tileType == -2) {
-    h.label.visibility = View.GONE
-    h.icon.visibility = View.GONE
-    h.c.post {
-        h.c.background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(0x00000000)
-            setCornerRadius(16f)
-            setStroke(1, 0x30FFFFFF.toInt())
+    
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val tile = tiles[position]
+        holder.label.text = tile.tileLabel ?: ""
+        holder.icon.visibility = View.VISIBLE
+        
+        val bg = try {
+            tile.tileColor?.let { Color.parseColor(it) } ?: Color.parseColor("#FF0050EF")
+        } catch (ex: Exception) {
+            Color.parseColor("#FF0050EF")
         }
-        val wv = LayoutInflater.from(context).inflate(R.layout.tile_weather, null)
-        val district = wv.findViewById<TextView>(R.id.districtName)
-        val temp = wv.findViewById<TextView>(R.id.today_tem)
-        val tomorrow = wv.findViewById<TextView>(R.id.tomorrow)
-        val overmorrow = wv.findViewById<TextView>(R.id.overmorrow)
-        val feels = wv.findViewById<TextView>(R.id.tv_feels)
-        val humidity = wv.findViewById<TextView>(R.id.tv_humidity)
-        val wind = wv.findViewById<TextView>(R.id.tv_wind)
-        val update = wv.findViewById<TextView>(R.id.updateTime)
-        district.text = t.tileLabel ?: "北京"
-        h.c.removeAllViews()
-        h.c.addView(wv)
-        coroutineScope.launch(Dispatchers.IO) {
-            val data = ru.queuejw.lumetro.components.weather.WeatherFetcher.fetchWeather(t.tileLabel ?: "北京")
-            withContext(Dispatchers.Main) {
-                if (data != null) {
-                    temp.text = "${data.temp}°"
-                    update.text = data.text
-                    feels.text = "${data.feelsLike}°"
-                    humidity.text = "${data.humidity}%"
-                    wind.text = "${data.windDir}${data.windScale}级"
-                    // forecast[0] = 今天, forecast[1] = 明天, forecast[2] = 后天
-                    if (data.forecast.size >= 2) {
-                        tomorrow.text = "${data.forecast[1].tempMax}°/${data.forecast[1].tempMin}° ${data.forecast[1].text}"
-                    }
-                    if (data.forecast.size >= 3) {
-                        overmorrow.text = "${data.forecast[2].tempMax}°/${data.forecast[2].tempMin}° ${data.forecast[2].text}"
-                    }
+        
+        if (tile.tileType == -2) {
+            holder.label.visibility = View.GONE
+            holder.icon.visibility = View.GONE
+            holder.container.post {
+                holder.container.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    setColor(0x00000000)
+                    setCornerRadius(16f)
+                    setStroke(1, 0x30FFFFFF.toInt())
                 }
-            }
-        }
-    }
-}
-    val cornerRadiusPx = if (t.tileCornerRadius != -1) t.tileCornerRadius.dpToPx().toFloat() else 0f
-    val base = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColor(Color.TRANSPARENT); setCornerRadius(cornerRadiusPx) }
-    val shadow = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColors(intArrayOf(0x00000000.toInt(), 0x40000000.toInt())); gradientType = GradientDrawable.LINEAR_GRADIENT; orientation = GradientDrawable.Orientation.TOP_BOTTOM; setCornerRadius(cornerRadiusPx) }
-    val highlight = GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; setColors(intArrayOf(0x28FFFFFF.toInt(), 0x00000000.toInt())); gradientType = GradientDrawable.LINEAR_GRADIENT; orientation = GradientDrawable.Orientation.TOP_BOTTOM; setCornerRadius(cornerRadiusPx) }
-    val ld = android.graphics.drawable.LayerDrawable(arrayOf(base, shadow, highlight))
-    GlassTileHelper.applyGlassShell(h.c, cornerRadiusPx)
-    var hasBg = false; val pkg = t.tilePackage
-    if (!pkg.isNullOrEmpty()) {
-        val bp = context.getSharedPreferences("tile_custom_icons", Context.MODE_PRIVATE).getString("bg_$pkg", null)
-        if (bp != null) try {
-            val raw = android.util.Base64.decode(bp, android.util.Base64.DEFAULT); val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
-            if (bm != null) { h.c.background = BitmapDrawable(context.resources, bm); h.icon.visibility = View.GONE; hasBg = true }
-        } catch (ex: Exception) {}
-    }
-    val sm = when (t.tileSize) { 1 -> 1.2f; 2 -> 1.2f; 3 -> 1.5f; 4 -> 1.8f; else -> 1f }; val ss = (iconSize * sm).toInt()
-    h.icon.layoutParams = FrameLayout.LayoutParams(ss, ss).apply { gravity = Gravity.CENTER }
-    if (!hasBg && !pkg.isNullOrEmpty()) {
-        val bmp = iconLoader.getIconForPackage(context, pkg)
-        if (bmp != null) h.icon.setImageBitmap(Bitmap.createScaledBitmap(bmp, ss, ss, true))
-    }
-    val isFrozenApp = pkg?.let { FreezeManager.isFrozen(context, it) } ?: false
-    h.c.scaleX = 0.8f; h.c.scaleY = 0.8f; h.c.alpha = 0f
-    h.c.animate().scaleX(1f).scaleY(1f).alpha(if (isFrozenApp) 0.5f else 1f).setDuration(300).setStartDelay((pos % 8) * 30L).start()
-    h.c.setOnClickListener {
-        if (isFrozenApp && pkg != null) {
-            coroutineScope.launch(Dispatchers.IO) {
-                val sh = ShizukuHelper.getInstance()
-                if (sh.unfreezeApp(pkg)) {
-                    FreezeManager.setFrozen(context, pkg, false)
+                val wv = LayoutInflater.from(context).inflate(R.layout.tile_weather, null)
+                val district = wv.findViewById<TextView>(R.id.districtName)
+                val temp = wv.findViewById<TextView>(R.id.today_tem)
+                val tomorrow = wv.findViewById<TextView>(R.id.tomorrow)
+                val overmorrow = wv.findViewById<TextView>(R.id.overmorrow)
+                val feels = wv.findViewById<TextView>(R.id.tv_feels)
+                val humidity = wv.findViewById<TextView>(R.id.tv_humidity)
+                val wind = wv.findViewById<TextView>(R.id.tv_wind)
+                val update = wv.findViewById<TextView>(R.id.updateTime)
+                district.text = tile.tileLabel ?: "北京"
+                holder.container.removeAllViews()
+                holder.container.addView(wv)
+                coroutineScope.launch(Dispatchers.IO) {
+                    val data = ru.queuejw.lumetro.components.weather.WeatherFetcher.fetchWeather(tile.tileLabel ?: "北京")
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "已解冻，启动中...", Toast.LENGTH_SHORT).show()
-                        refreshTilesIfNeeded()
-                        try { AppManager.launchApp(pkg, context) } catch (e: Exception) {}
-                        hidePanel()
+                        if (data != null) {
+                            temp.text = "${data.temp}°"
+                            update.text = data.text
+                            feels.text = "${data.feelsLike}°"
+                            humidity.text = "${data.humidity}%"
+                            wind.text = "${data.windDir}${data.windScale}级"
+                            if (data.forecast.size >= 2) {
+                                tomorrow.text = "${data.forecast[1].tempMax}°/${data.forecast[1].tempMin}° ${data.forecast[1].text}"
+                            }
+                            if (data.forecast.size >= 3) {
+                                overmorrow.text = "${data.forecast[2].tempMax}°/${data.forecast[2].tempMin}° ${data.forecast[2].text}"
+                            }
+                        }
                     }
-                } else { withContext(Dispatchers.Main) { Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show() } }
-            }
-        } else {
-            h.c.animate().scaleX(0.9f).scaleY(0.9f).alpha(0.7f).setDuration(100).withEndAction {
-                pkg?.let { coroutineScope.launch { try { AppManager.launchApp(it, context) } catch (ex: Exception) {}; hidePanel() } }
-            }.start()
-        }
-    }
-    h.c.setOnLongClickListener { showTilePopup(h.c, t); true }
-    val doFlip = object : Runnable {
-        override fun run() {
-            val anim = ValueAnimator.ofFloat(0f, 180f).apply {
-                duration = 350 + (Math.random() * 250).toLong()
-                repeatCount = 1
-                repeatMode = ValueAnimator.REVERSE
-                interpolator = DecelerateInterpolator()
-                addUpdateListener { a ->
-                    val v = a.animatedValue as Float
-                    h.c.rotationY = v
                 }
             }
-            anim.start()
-            h.c.postDelayed(this, 5000 + (Math.random() * 25000).toLong())
+            return
         }
+        
+        val cornerRadiusPx = if (tile.tileCornerRadius != -1) tile.tileCornerRadius.dpToPx().toFloat() else 0f
+        val base = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(Color.TRANSPARENT)
+            setCornerRadius(cornerRadiusPx)
+        }
+        val shadow = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColors(intArrayOf(0x00000000.toInt(), 0x40000000.toInt()))
+            gradientType = GradientDrawable.LINEAR_GRADIENT
+            orientation = GradientDrawable.Orientation.TOP_BOTTOM
+            setCornerRadius(cornerRadiusPx)
+        }
+        val highlight = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColors(intArrayOf(0x28FFFFFF.toInt(), 0x00000000.toInt()))
+            gradientType = GradientDrawable.LINEAR_GRADIENT
+            orientation = GradientDrawable.Orientation.TOP_BOTTOM
+            setCornerRadius(cornerRadiusPx)
+        }
+        val ld = android.graphics.drawable.LayerDrawable(arrayOf(base, shadow, highlight))
+        GlassTileHelper.applyGlassShell(holder.container, cornerRadiusPx)
+        
+        var hasBg = false
+        val pkg = tile.tilePackage
+        if (!pkg.isNullOrEmpty()) {
+            val bp = context.getSharedPreferences("tile_custom_icons", Context.MODE_PRIVATE).getString("bg_$pkg", null)
+            if (bp != null) {
+                try {
+                    val raw = android.util.Base64.decode(bp, android.util.Base64.DEFAULT)
+                    val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                    if (bm != null) {
+                        holder.container.background = BitmapDrawable(context.resources, bm)
+                        holder.icon.visibility = View.GONE
+                        hasBg = true
+                    }
+                } catch (ex: Exception) {
+                    Log.e("TileAdapter", "Failed to load custom icon", ex)
+                }
+            }
+        }
+        
+        val sm = when (tile.tileSize) {
+            1 -> 1.2f
+            2 -> 1.2f
+            3 -> 1.5f
+            4 -> 1.8f
+            else -> 1f
+        }
+        val ss = (iconSize * sm).toInt()
+        holder.icon.layoutParams = FrameLayout.LayoutParams(ss, ss).apply {
+            gravity = Gravity.CENTER
+        }
+        
+        if (!hasBg && !pkg.isNullOrEmpty()) {
+            val bmp = iconLoader.getIconForPackage(context, pkg)
+            if (bmp != null) {
+                holder.icon.setImageBitmap(Bitmap.createScaledBitmap(bmp, ss, ss, true))
+            }
+        }
+        
+        val isFrozenApp = pkg?.let { FreezeManager.isFrozen(context, it) } ?: false
+        holder.container.scaleX = 0.8f
+        holder.container.scaleY = 0.8f
+        holder.container.alpha = 0f
+        holder.container.animate()
+            .scaleX(1f)
+            .scaleY(1f)
+            .alpha(if (isFrozenApp) 0.5f else 1f)
+            .setDuration(300)
+            .setStartDelay((position % 8) * 30L)
+            .start()
+        
+        holder.container.setOnClickListener {
+            if (isFrozenApp && pkg != null) {
+                coroutineScope.launch(Dispatchers.IO) {
+                    val sh = ShizukuHelper.getInstance()
+                    if (sh.unfreezeApp(pkg)) {
+                        FreezeManager.setFrozen(context, pkg, false)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "已解冻，启动中...", Toast.LENGTH_SHORT).show()
+                            refreshTilesIfNeeded()
+                            try { AppManager.launchApp(pkg, context) } catch (e: Exception) {
+                                Log.e("TileAdapter", "Launch app failed", e)
+                            }
+                            hidePanel()
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } else {
+                holder.container.animate()
+                    .scaleX(0.9f)
+                    .scaleY(0.9f)
+                    .alpha(0.7f)
+                    .setDuration(100)
+                    .withEndAction {
+                        pkg?.let {
+                            coroutineScope.launch {
+                                try {
+                                    AppManager.launchApp(it, context)
+                                } catch (ex: Exception) {
+                                    Log.e("TileAdapter", "Launch app failed", ex)
+                                }
+                                hidePanel()
+                            }
+                        }
+                    }
+                    .start()
+            }
+        }
+        
+        holder.container.setOnLongClickListener {
+            showTilePopup(holder.container, tile)
+            true
+        }
+        
+        val doFlip = object : Runnable {
+            override fun run() {
+                val anim = ValueAnimator.ofFloat(0f, 180f).apply {
+                    duration = 350 + (Math.random() * 250).toLong()
+                    repeatCount = 1
+                    repeatMode = ValueAnimator.REVERSE
+                    interpolator = DecelerateInterpolator()
+                    addUpdateListener { a ->
+                        val v = a.animatedValue as Float
+                        holder.container.rotationY = v
+                    }
+                }
+                anim.start()
+                holder.container.postDelayed(this, 5000 + (Math.random() * 25000).toLong())
+            }
+        }
+        holder.container.postDelayed(doFlip, 1000 + (Math.random() * 29000).toLong())
     }
-    h.c.postDelayed(doFlip, 1000 + (Math.random() * 29000).toLong())
-}
+    
     override fun getItemCount() = tiles.size
 }
-private fun showTilePopup(a: View, t: TileEntity) {
-    currentPopup?.dismiss()
-    val pv = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(8, 8, 8, 8) }
-    val pkg = t.tilePackage
+
+private fun showTilePopup(anchor: View, tile: TileEntity) {
+    dismissPopup()
+    
+    val pv = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(Color.BLACK)
+        setPadding(8, 8, 8, 8)
+    }
+    
+    val pkg = tile.tilePackage
     val inFreezeList = pkg?.let { FreezeManager.getList(context).contains(it) } ?: false
+    
     if (inFreezeList) {
         val isSysFrozen = pkg?.let { FreezeManager.isFrozen(context, it) } ?: false
-        pv.addView(tv(if (isSysFrozen) "解冻应用" else "冻结应用") {
-            currentPopup?.dismiss()
+        pv.addView(createPopupText(if (isSysFrozen) "解冻应用" else "冻结应用") {
+            dismissPopup()
             pkg?.let { p ->
                 coroutineScope.launch(Dispatchers.IO) {
                     val sh = ShizukuHelper.getInstance()
                     if (isSysFrozen) {
-                        if (sh.unfreezeApp(p)) { FreezeManager.setFrozen(context, p, false); withContext(Dispatchers.Main) { refreshTilesIfNeeded(); Toast.makeText(context, "已解冻", Toast.LENGTH_SHORT).show() } }
-                        else withContext(Dispatchers.Main) { Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show() }
+                        if (sh.unfreezeApp(p)) {
+                            FreezeManager.setFrozen(context, p, false)
+                            withContext(Dispatchers.Main) {
+                                refreshTilesIfNeeded()
+                                Toast.makeText(context, "已解冻", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     } else {
-                        if (sh.freezeApp(p)) { FreezeManager.setFrozen(context, p, true); withContext(Dispatchers.Main) { refreshTilesIfNeeded(); Toast.makeText(context, "已冻结", Toast.LENGTH_SHORT).show() } }
-                        else withContext(Dispatchers.Main) { Toast.makeText(context, "冻结失败", Toast.LENGTH_SHORT).show() }
+                        if (sh.freezeApp(p)) {
+                            FreezeManager.setFrozen(context, p, true)
+                            withContext(Dispatchers.Main) {
+                                refreshTilesIfNeeded()
+                                Toast.makeText(context, "已冻结", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "冻结失败", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     }
                 }
             }
         })
     }
-    if (t.tileType == -2) {
-        pv.addView(tv("切换城市") {
-            currentPopup?.dismiss()
-            val input = EditText(context).apply { setText(t.tileLabel ?: "北京"); setSingleLine(); setPadding(16, 8, 16, 8); setBackgroundColor(Color.DKGRAY); setTextColor(Color.WHITE); setHint("输入城市名"); setHintTextColor(Color.GRAY) }
-            val popup = PopupWindow(input, 500.dpToPx(), 100.dpToPx(), true).apply { setBackgroundDrawable(ColorDrawable(Color.BLACK)); showAtLocation(a, Gravity.CENTER, 0, 0) }
+    
+    if (tile.tileType == -2) {
+        pv.addView(createPopupText("切换城市") {
+            dismissPopup()
+            val input = EditText(context).apply {
+                setText(tile.tileLabel ?: "北京")
+                setSingleLine()
+                setPadding(16, 8, 16, 8)
+                setBackgroundColor(Color.DKGRAY)
+                setTextColor(Color.WHITE)
+                setHint("输入城市名")
+                setHintTextColor(Color.GRAY)
+            }
+            val popup = PopupWindow(input, 500.dpToPx(), 100.dpToPx(), true).apply {
+                setBackgroundDrawable(ColorDrawable(Color.BLACK))
+                showAtLocation(anchor, Gravity.CENTER, 0, 0)
+            }
+            currentPopupRef = WeakReference(popup)
             input.setOnEditorActionListener { _, actionId, _ ->
                 if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
                     val city = input.text.toString().trim()
                     if (city.isNotEmpty()) {
-                        t.tileLabel = city
-                        context.getSharedPreferences("weather", Context.MODE_PRIVATE).edit().putString("city", city).apply()
+                        tile.tileLabel = city
+                        context.getSharedPreferences("weather", Context.MODE_PRIVATE)
+                            .edit()
+                            .putString("city", city)
+                            .apply()
                         popup.dismiss()
                         refreshTilesIfNeeded()
                     }
@@ -722,43 +1109,105 @@ private fun showTilePopup(a: View, t: TileEntity) {
             }
         })
     }
-    pv.addView(tv("编辑") { currentPopup?.dismiss(); showEditPanel(t) })
-    pv.addView(tv("更改大小") { currentPopup?.dismiss(); t.tileSize = (t.tileSize + 1) % 5; coroutineScope.launch(Dispatchers.IO) { db?.getTilesDao()?.updateTile(t); withContext(Dispatchers.Main) { refreshTilesIfNeeded() } } })
-    pv.addView(tv("取消固定") { currentPopup?.dismiss(); unpinTile(t) })
-    pkg?.let { pv.addView(tv("应用信息") { currentPopup?.dismiss(); context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:$it")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }) }
-    currentPopup = PopupWindow(pv, 200.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true); showPopup(currentPopup!!, a)
+    
+    pv.addView(createPopupText("编辑") {
+        dismissPopup()
+        showEditPanel(tile)
+    })
+    pv.addView(createPopupText("更改大小") {
+        dismissPopup()
+        tile.tileSize = (tile.tileSize + 1) % 5
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                db?.getTilesDao()?.updateTile(tile)
+                withContext(Dispatchers.Main) { refreshTilesIfNeeded() }
+            } catch (e: Exception) {
+                Log.e("SidebarManager", "Change tile size failed", e)
+            }
+        }
+    })
+    pv.addView(createPopupText("取消固定") {
+        dismissPopup()
+        unpinTile(tile)
+    })
+    pkg?.let {
+        pv.addView(createPopupText("应用信息") {
+            dismissPopup()
+            context.startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.parse("package:$it"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        })
+    }
+    
+    val popup = PopupWindow(pv, 200.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true)
+    showPopup(popup, anchor)
+    currentPopupRef = WeakReference(popup)
 }
 
-private fun tv(text: String, click: () -> Unit) = TextView(context).apply { this.text = text; textSize = 16f; setTextColor(Color.WHITE); setPadding(32, 16, 32, 16); setOnClickListener { click() } }
+private fun createPopupText(text: String, click: () -> Unit): View {
+    return TextView(context).apply {
+        this.text = text
+        textSize = 16f
+        setTextColor(Color.WHITE)
+        setPadding(32, 16, 32, 16)
+        setOnClickListener { click() }
+    }
+}
 
-private fun isFrozen(t: TileEntity) = (context.getSharedPreferences("tile_settings", Context.MODE_PRIVATE).getStringSet("frozen_tiles", emptySet()) ?: emptySet()).contains(t.id.toString())
+private fun dismissPopup() {
+    currentPopupRef?.get()?.dismiss()
+    currentPopupRef = null
+}
 
-private fun unpinTile(t: TileEntity) {
-    // 锁定状态下禁止删除磁贴
+private fun isFrozen(tile: TileEntity): Boolean {
+    val frozenSet = context.getSharedPreferences("tile_settings", Context.MODE_PRIVATE)
+        .getStringSet("frozen_tiles", emptySet()) ?: emptySet()
+    return frozenSet.contains(tile.id.toString())
+}
+
+private fun unpinTile(tile: TileEntity) {
     if (prefs.tilesLocked) {
         Toast.makeText(context, "磁贴已锁定，无法删除", Toast.LENGTH_SHORT).show()
         return
     }
     coroutineScope.launch(Dispatchers.IO) {
-        val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
-        tiles.indexOfFirst { it.id == t.id }.takeIf { it >= 0 }?.let { idx ->
-            tiles[idx] = TileEntity(tiles[idx].id, idx, null, -1, -1, 0, null, null)
-            dao.updateAllTiles(tiles)
-            val remainingSlots = tiles.count { it.tileType == -1 }
-            if (remainingSlots < 2) {
-                val newPos = tiles.size
-                dao.insertTile(TileEntity(tilePosition = newPos, tileColor = null, tileCornerRadius = -1, tileType = -1, tileSize = 0, tileLabel = null, tilePackage = null))
+        try {
+            val dao = db?.getTilesDao()
+            val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
+            tiles.indexOfFirst { it.id == tile.id }.takeIf { it >= 0 }?.let { idx ->
+                tiles[idx] = TileEntity(tiles[idx].id, idx, null, -1, -1, 0, null, null)
+                dao.updateAllTiles(tiles)
+                val remainingSlots = tiles.count { it.tileType == -1 }
+                if (remainingSlots < 2) {
+                    val newPos = tiles.size
+                    dao.insertTile(TileEntity(
+                        tilePosition = newPos,
+                        tileColor = null,
+                        tileCornerRadius = -1,
+                        tileType = -1,
+                        tileSize = 0,
+                        tileLabel = null,
+                        tilePackage = null
+                    ))
+                }
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "已取消固定", Toast.LENGTH_SHORT).show()
+                    refreshTilesIfNeeded()
+                }
             }
-            withContext(Dispatchers.Main) { Toast.makeText(context, "已取消固定", Toast.LENGTH_SHORT).show(); refreshTilesIfNeeded() }
+        } catch (e: Exception) {
+            Log.e("SidebarManager", "unpinTile failed", e)
         }
     }
 }
 
 private fun filteredApps(): List<App> {
-    val pinned = cachedTiles.filter { it.tileType != -1 && it.tilePackage != null }.map { it.tilePackage }.toSet()
     val hidden = FreezeManager.getHiddenList(context).toSet()
-    return sortApps(cachedApps).filter { it.mPackage !in pinned && it.mPackage !in hidden }
+    return sortApps(cachedApps).filter { it.mPackage !in hidden }
 }
+
 fun getLetterPositions(): Map<String, Int> {
     val apps = filteredApps()
     val collator = java.text.Collator.getInstance(java.util.Locale.CHINESE)
@@ -781,648 +1230,1283 @@ fun getLetterPositions(): Map<String, Int> {
     return map
 }
 
-private fun sortApps(apps: List<App>): List<App> = apps.sortedWith(compareBy(collator) { app: App -> app.mName })
+private fun sortApps(apps: List<App>): List<App> = 
+    apps.sortedWith(compareBy(collator) { app: App -> app.mName })
 
 private fun sortByUsage(apps: List<App>): List<App> {
-    val usageManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager ?: return apps
-    val now = System.currentTimeMillis()
-    val stats = usageManager.queryUsageStats(android.app.usage.UsageStatsManager.INTERVAL_BEST, 0, now)
-    val usageMap = mutableMapOf<String, Long>()
-    stats?.forEach { stat -> usageMap[stat.packageName] = stat.lastTimeUsed }
-    return apps.sortedByDescending { usageMap[it.mPackage] ?: 0L }
-}
-
-// ===== 设置弹窗 =====
-private fun showPanelBgDialog() {
-    currentPopup?.dismiss()
-    val layout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 16, 32, 16); setBackgroundColor(Color.DKGRAY) }
-    val scrollView = ScrollView(context).apply { layoutParams = LinearLayout.LayoutParams(300.dpToPx(), 450.dpToPx()) }
-    val content = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-
-    content.addView(TextView(context).apply { text = "面板背景颜色"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 8, 0, 4) })
-    val colorInput = EditText(context).apply { setText(prefs.panelBackgroundColor); setSingleLine(); setPadding(8, 8, 8, 8); setBackgroundColor(Color.BLACK); setTextColor(Color.WHITE) }
-    content.addView(colorInput)
-
-    content.addView(TextView(context).apply { text = "面板背景图(Base64)"; setTextColor(Color.WHITE); textSize = 12f; setPadding(0, 12, 0, 4) })
-    val bgImageInput = EditText(context).apply { hint = "留空清除"; setSingleLine(); setPadding(8, 8, 8, 8); setBackgroundColor(Color.BLACK); setTextColor(Color.WHITE) }
-    content.addView(bgImageInput)
-    content.addView(android.widget.Button(context).apply { text = "从相册选择背景图"; setOnClickListener { currentPopup?.dismiss(); hidePanel(); context.startActivity(Intent(context, PanelBgPickerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
-
-
-    content.addView(TextView(context).apply { text = "面板透明度"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    val alphaSlider = SeekBar(context).apply { max = 100; progress = (prefs.panelBackgroundAlpha * 100).toInt() }
-    content.addView(alphaSlider)
-
-    content.addView(TextView(context).apply { text = "磁贴背景透明度"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    val tileAlphaSlider = SeekBar(context).apply { max = 100; progress = (prefs.tileAlpha * 100).toInt() }
-    content.addView(tileAlphaSlider)
-
-    content.addView(TextView(context).apply { text = "手势灵敏度"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    val sensSlider = SeekBar(context).apply { max = 100; progress = swipeThreshold / 2 }
-    content.addView(sensSlider)
-
-    content.addView(TextView(context).apply { text = "手势条宽度(dp)"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    val stripWInput = EditText(context).apply { setText(prefs.gestureStripWidth.toString()); setSingleLine(); setPadding(8, 8, 8, 8); setBackgroundColor(Color.BLACK); setTextColor(Color.WHITE) }
-    content.addView(stripWInput)
-
-    content.addView(TextView(context).apply { text = "手势条高度(dp, 0=全屏)"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    val stripHInput = EditText(context).apply { setText(prefs.gestureStripHeight.toString()); setSingleLine(); setPadding(8, 8, 8, 8); setBackgroundColor(Color.BLACK); setTextColor(Color.WHITE) }
-    content.addView(stripHInput)
-
-    content.addView(TextView(context).apply { text = "手势条偏移(dp)"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    val stripOInput = EditText(context).apply { setText(prefs.gestureStripOffset.toString()); setSingleLine(); setPadding(8, 8, 8, 8); setBackgroundColor(Color.BLACK); setTextColor(Color.WHITE) }
-    content.addView(stripOInput)
-
-    content.addView(TextView(context).apply { text = "手势条透明度"; setTextColor(Color.WHITE); textSize = 14f; setPadding(0, 12, 0, 4) })
-    val stripAlphaSlider = SeekBar(context).apply { max = 100; progress = (prefs.gestureStripAlpha * 100).toInt() }
-    content.addView(stripAlphaSlider)
-    
-    // 锁定磁贴
-    val lockLayout = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(0, 12, 0, 12)
-    }
-    val lockLabel = TextView(context).apply {
-        text = "锁定磁贴布局"
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-    }
-    lockLayout.addView(lockLabel)
-
-    val lockSwitch = android.widget.Switch(context).apply {
-        isChecked = prefs.tilesLocked
-        setOnCheckedChangeListener { _, isChecked ->
-            prefs.tilesLocked = isChecked
-            // 锁定后禁用自动固定
-            if (isChecked) {
-                prefs.autoPinEnabled = false
-            }
-            Toast.makeText(context, if (isChecked) "磁贴已锁定，禁止添加/删除" else "磁贴已解锁", Toast.LENGTH_SHORT).show()
-        }
-    }
-    lockLayout.addView(lockSwitch)
-    content.addView(lockLayout)
-
-    content.addView(android.widget.Button(context).apply {
-        text = "选择图标包"
-        setOnClickListener { showIconPackPicker() }
-    })
-    content.addView(android.widget.Button(context).apply {
-        text = "冻结列表"
-        setOnClickListener { currentPopup?.dismiss(); showFreezeListDialog() }
-    })
-    content.addView(android.widget.Button(context).apply {
-        text = "应用"
-        setOnClickListener {
-            val c = colorInput.text.toString()
-            if (c.isNotEmpty()) prefs.panelBackgroundColor = c
-            prefs.panelBackgroundAlpha = alphaSlider.progress / 100f
-            prefs.tileAlpha = tileAlphaSlider.progress / 100f
-            swipeThreshold = sensSlider.progress * 2
-
-            stripWInput.text.toString().toIntOrNull()?.let { if (it > 0) { prefs.gestureStripWidth = it; destroyGestureStrip(); createGestureStrip() } }
-            stripHInput.text.toString().toIntOrNull()?.let { if (it >= 0) { prefs.gestureStripHeight = it; destroyGestureStrip(); createGestureStrip() } }
-            stripOInput.text.toString().toIntOrNull()?.let { prefs.gestureStripOffset = it; destroyGestureStrip(); createGestureStrip() }
-            prefs.gestureStripAlpha = stripAlphaSlider.progress / 100f
-            destroyGestureStrip(); createGestureStrip()
-
-            val bg = bgImageInput.text.toString()
-            if (bg.isNotEmpty()) prefs.panelBackgroundImage = bg
-            try {
-                if (bg.isNotEmpty()) {
-                    val raw = android.util.Base64.decode(bg, android.util.Base64.DEFAULT)
-                    val bm = BitmapFactory.decodeByteArray(raw, 0, raw.size)
-                    if (bm != null) {
-    panelBgBitmap = bm
-    val screenHeight = context.resources.displayMetrics.heightPixels
-    val scale = Math.max(appsWidth.toFloat() / bm.width, screenHeight.toFloat() / bm.height)
-    val scaledWidth = (bm.width * scale).toInt()
-    val scaledHeight = (bm.height * scale).toInt()
-    val scaled = Bitmap.createScaledBitmap(bm, scaledWidth, scaledHeight, true)
-    val x = (scaledWidth - appsWidth) / 2
-    val y = (scaledHeight - screenHeight) / 2
-    val cropped = Bitmap.createBitmap(scaled, Math.max(0, x), Math.max(0, y), appsWidth, screenHeight)
-    contentContainer?.background = BitmapDrawable(context.resources, cropped)
-}
-                }
-            } catch (e: Exception) { }
-            currentPopup?.dismiss(); hidePanel()
-        }
-    })
-    content.addView(android.widget.Button(context).apply {
-        text = "导出设置"
-        setOnClickListener {
-            try {
-                val prefsDir = java.io.File(context.filesDir.parent, "shared_prefs")
-                val src = java.io.File(prefsDir, "settings.xml")
-                val destDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                val dest = java.io.File(destDir, "lumetro_backup.xml")
-                val freezeSrc = java.io.File(prefsDir, "freeze.xml")
-                val freezeDest = java.io.File(destDir, "lumetro_freeze_backup.xml")
-                if (freezeSrc.exists()) freezeSrc.copyTo(freezeDest, true)
-                val tileDbSrc = java.io.File(context.filesDir.parent, "databases/userTiles")
-                val tileDbDest = java.io.File(destDir, "lumetro_tiles_backup.db")
-                coroutineScope.launch(Dispatchers.IO) { db?.getTilesDao()?.getTilesData() }
-                db?.close()
-                if (tileDbSrc.exists()) tileDbSrc.copyTo(tileDbDest, true)
-                src.copyTo(dest, true)
-                Toast.makeText(context, "已导出: ${dest.absolutePath}", Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) { Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show() }
-        }
-    })
-    content.addView(android.widget.Button(context).apply {
-        text = "导入设置"
-        setOnClickListener {
-            try {
-    val prefsDir = java.io.File(context.filesDir.parent, "shared_prefs")
-    val dest = java.io.File(prefsDir, "settings.xml")
-    val srcDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-    val freezeSrcFile = java.io.File(srcDir, "lumetro_freeze_backup.xml")
-    val freezeDestFile = java.io.File(prefsDir, "freeze.xml")
-    if (freezeSrcFile.exists()) freezeSrcFile.copyTo(freezeDestFile, true)
-    val tileDbSrcFile = java.io.File(srcDir, "lumetro_tiles_backup.db")
-    val tileDbDestFile = java.io.File(context.filesDir.parent, "databases/userTiles")
-    if (tileDbSrcFile.exists()) {
-    db?.close()
-    // 删掉旧数据库文件和wal/shm
-    tileDbDestFile.delete()
-    java.io.File(context.filesDir.parent, "databases/userTiles-wal").delete()
-    java.io.File(context.filesDir.parent, "databases/userTiles-shm").delete()
-    tileDbSrcFile.copyTo(tileDbDestFile, true)
-}
-    val src = java.io.File(srcDir, "lumetro_backup.xml")
-    if (src.exists()) {
-        src.copyTo(dest, true)
-        Toast.makeText(context, "已导入，重启生效", Toast.LENGTH_SHORT).show()
-    } else { Toast.makeText(context, "备份文件不存在", Toast.LENGTH_SHORT).show() }
-} catch (e: Exception) { Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show() }
-        }
-    })
-
-    scrollView.addView(content); layout.addView(scrollView)
-    currentPopup?.dismiss()
-    currentPopup = PopupWindow(layout, 320.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true)
-    currentPopup?.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
-    currentPopup?.showAtLocation(contentContainer, Gravity.CENTER, 0, 0)
-}
-private fun showIconPackPicker() {
-    val layout = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(16, 16, 16, 16)
-        setBackgroundColor(Color.DKGRAY)
-    }
-    layout.addView(TextView(context).apply {
-        text = "选择图标包"
-        textSize = 20f
-        setTextColor(Color.CYAN)
-        setPadding(0, 8, 0, 16)
-    })
-    val listLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    listLayout.addView(TextView(context).apply { text = "加载中..."; setTextColor(Color.GRAY) })
-    val scrollView = ScrollView(context).apply {
-        layoutParams = LinearLayout.LayoutParams(300.dpToPx(), 350.dpToPx())
-    }
-    scrollView.addView(listLayout)
-    layout.addView(scrollView)
-    layout.addView(android.widget.Button(context).apply {
-        text = "关闭"
-        setOnClickListener { currentPopup?.dismiss() }
-    })
-    currentPopup?.dismiss()
-    currentPopup = PopupWindow(layout, 340.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true)
-    currentPopup?.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
-    currentPopup?.showAtLocation(contentContainer, Gravity.CENTER, 0, 0)
-    coroutineScope.launch(Dispatchers.IO) {
-        try {
-            val pm = context.packageManager
-            val intents1 = pm.queryIntentActivities(Intent("org.adw.launcher.THEMES"), PackageManager.GET_META_DATA)
-            val intents2 = pm.queryIntentActivities(Intent("com.gau.go.launcherex.theme"), PackageManager.GET_META_DATA)
-            val intents3 = pm.queryIntentActivities(Intent("com.novalauncher.THEME"), PackageManager.GET_META_DATA)
-            val allIntents = (intents1 + intents2 + intents3).distinctBy { it.activityInfo.packageName }
-            val iconPacks = allIntents.mapNotNull { ri ->
-                try {
-                    val pkg = ri.activityInfo.packageName
-                    if (pkg == context.packageName) null
-                    else {
-                        val app = pm.getApplicationInfo(pkg, 0)
-                        pkg to pm.getApplicationLabel(app).toString()
-                    }
-                } catch (e: Exception) { null }
-            }.distinctBy { it.first }.sortedBy { it.second }
-            withContext(Dispatchers.Main) {
-                listLayout.removeAllViews()
-                if (iconPacks.isEmpty()) {
-                    listLayout.addView(TextView(context).apply {
-                        text = "未找到图标包"; setTextColor(Color.GRAY); setPadding(0, 16, 0, 0)
-                    })
-                } else {
-                    iconPacks.forEach { (pkg, name) ->
-                        val item = TextView(context).apply {
-                            this.text = name; textSize = 16f; setTextColor(Color.WHITE)
-                            setPadding(16, 14, 16, 14); setBackgroundColor(Color.parseColor("#FF2A2A2A"))
-                            val params = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                            params.setMargins(0, 0, 0, 4); layoutParams = params
-                            setOnClickListener {
-                                prefs.iconPackPackage = pkg
-                                reloadIconPack()
-                                currentPopup?.dismiss()
-                                Toast.makeText(context, "已应用: $name", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                        listLayout.addView(item)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            withContext(Dispatchers.Main) {
-                listLayout.removeAllViews()
-                listLayout.addView(TextView(context).apply {
-                    text = "加载失败: ${e.message}"; setTextColor(Color.RED)
-                })
-            }
-        }
+    try {
+        val usageManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
+            ?: return apps
+        val now = System.currentTimeMillis()
+        val stats = usageManager.queryUsageStats(android.app.usage.UsageStatsManager.INTERVAL_BEST, 0, now)
+        val usageMap = mutableMapOf<String, Long>()
+        stats?.forEach { stat -> usageMap[stat.packageName] = stat.lastTimeUsed }
+        return apps.sortedByDescending { usageMap[it.mPackage] ?: 0L }
+    } catch (e: Exception) {
+        Log.e("SidebarManager", "sortByUsage failed", e)
+        return apps
     }
 }
 
-private fun performOneKeyFreeze() {
-    val sh = ShizukuHelper.getInstance()
-    ShizukuHelper.getInstance().checkStatus()
-    if (!sh.isReady()) { Toast.makeText(context, "Shizuku 未就绪", Toast.LENGTH_SHORT).show(); return }
-    val list = FreezeManager.getList(context)
-    if (list.isEmpty()) { Toast.makeText(context, "冻结列表为空", Toast.LENGTH_SHORT).show(); return }
-    coroutineScope.launch(Dispatchers.IO) {
-        var count = 0
-        for (pkg in list) {
-            if (FreezeManager.isFrozen(context, pkg)) continue
-            iconLoader.getIconForPackage(context, pkg)
-            if (sh.freezeApp(pkg)) { FreezeManager.setFrozen(context, pkg, true); count++; Thread.sleep(50) }
+    // ===== 设置弹窗 =====
+    private fun showPanelBgDialog() {
+        dismissPopup()
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 16, 32, 16)
+            setBackgroundColor(Color.DKGRAY)
         }
-        withContext(Dispatchers.Main) {
-            Toast.makeText(context, "已冻结 $count 个应用", Toast.LENGTH_SHORT).show()
-            refreshTilesIfNeeded()
-            refreshAppsIfNeeded()
+        val scrollView = ScrollView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(300.dpToPx(), 450.dpToPx())
         }
-    }
-}
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
 
-private fun showFreezeListDialog() {
-    val layout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(16, 16, 16, 16); setBackgroundColor(Color.DKGRAY) }
-    layout.addView(TextView(context).apply { text = "可冻结应用列表"; textSize = 18f; setTextColor(Color.WHITE); setPadding(0, 8, 0, 16) })
-    val scrollView = ScrollView(context).apply { layoutParams = LinearLayout.LayoutParams(280.dpToPx(), 350.dpToPx()) }
-    val listLayout = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-    val freezeList = FreezeManager.getList(context)
-    val pm = context.packageManager
-    val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-    val appList = ArrayList<App>()
-    for (info in installedApps) {
-        if (info.packageName == context.packageName) continue
-        if ((info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) continue
-        appList.add(App(info.loadLabel(pm).toString(), info.packageName, 0))
-    }
-    appList.sortBy { it.mName }
-    for (app in appList) {
-        val pkg = app.mPackage ?: continue
-        val isInList = freezeList.contains(pkg)
-        val itemLayout = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(8, 8, 8, 8); gravity = Gravity.CENTER_VERTICAL }
-        itemLayout.addView(TextView(context).apply { text = app.mName; setTextColor(Color.WHITE); textSize = 14f; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
-        itemLayout.addView(TextView(context).apply {
-            text = if (isInList) "移除" else "添加"; setTextColor(if (isInList) Color.RED else Color.GREEN); textSize = 14f; setPadding(16, 4, 0, 4)
+        content.addView(TextView(context).apply {
+            text = "面板背景颜色"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 8, 0, 4)
+        })
+        val colorInput = EditText(context).apply {
+            setText(prefs.panelBackgroundColor)
+            setSingleLine()
+            setPadding(8, 8, 8, 8)
+            setBackgroundColor(Color.BLACK)
+            setTextColor(Color.WHITE)
+        }
+        content.addView(colorInput)
+
+        content.addView(TextView(context).apply {
+            text = "面板背景图(Base64)"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            setPadding(0, 12, 0, 4)
+        })
+        val bgImageInput = EditText(context).apply {
+            hint = "留空清除"
+            setSingleLine()
+            setPadding(8, 8, 8, 8)
+            setBackgroundColor(Color.BLACK)
+            setTextColor(Color.WHITE)
+        }
+        content.addView(bgImageInput)
+        content.addView(android.widget.Button(context).apply {
+            text = "从相册选择背景图"
             setOnClickListener {
-                if (isInList) FreezeManager.removeFromList(context, pkg) else FreezeManager.addToList(context, pkg)
-                freezeListScrollY = scrollView.scrollY
-                currentPopup?.dismiss(); showFreezeListDialog()
+                dismissPopup()
+                hidePanel()
+                context.startActivity(
+                    Intent(context, PanelBgPickerActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
             }
         })
-        listLayout.addView(itemLayout)
-    }
-    val hiddenApps = FreezeManager.getHiddenList(context)
-    if (hiddenApps.isNotEmpty()) {
-        listLayout.addView(TextView(context).apply { text = "已隐藏应用"; textSize = 16f; setTextColor(Color.YELLOW); setPadding(0, 16, 0, 8) })
-        for (pkg in hiddenApps) {
-            val name = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
-            val itemLayout = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; setPadding(8, 8, 8, 8); gravity = Gravity.CENTER_VERTICAL }
-            itemLayout.addView(TextView(context).apply { text = name; setTextColor(Color.WHITE); textSize = 14f; layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
-            itemLayout.addView(TextView(context).apply { text = "恢复"; setTextColor(Color.GREEN); textSize = 14f; setPadding(16, 4, 0, 4); setOnClickListener { FreezeManager.toggleHidden(context, pkg); currentPopup?.dismiss(); showFreezeListDialog() } })
-            listLayout.addView(itemLayout)
+
+        content.addView(TextView(context).apply {
+            text = "面板透明度"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 12, 0, 4)
+        })
+        val alphaSlider = SeekBar(context).apply {
+            max = 100
+            progress = (prefs.panelBackgroundAlpha * 100).toInt()
         }
-    }
-    layout.addView(android.widget.Button(context).apply {
-        text = "一键解冻"
-        setOnClickListener {
-            currentPopup?.dismiss()
-            coroutineScope.launch(Dispatchers.IO) {
-                val list = FreezeManager.getList(context)
-                val sh = ShizukuHelper.getInstance()
-                var count = 0
-                for (pkg in list) {
-                    if (!FreezeManager.isFrozen(context, pkg)) continue
-                    if (sh.unfreezeApp(pkg)) { FreezeManager.setFrozen(context, pkg, false); count++ }
+        content.addView(alphaSlider)
+
+        content.addView(TextView(context).apply {
+            text = "磁贴背景透明度"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 12, 0, 4)
+        })
+        val tileAlphaSlider = SeekBar(context).apply {
+            max = 100
+            progress = (prefs.tileAlpha * 100).toInt()
+        }
+        content.addView(tileAlphaSlider)
+
+        content.addView(TextView(context).apply {
+            text = "手势灵敏度"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 12, 0, 4)
+        })
+        val sensSlider = SeekBar(context).apply {
+            max = 100
+            progress = swipeThreshold / 2
+        }
+        content.addView(sensSlider)
+
+        content.addView(TextView(context).apply {
+            text = "手势条宽度(dp)"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 12, 0, 4)
+        })
+        val stripWInput = EditText(context).apply {
+            setText(prefs.gestureStripWidth.toString())
+            setSingleLine()
+            setPadding(8, 8, 8, 8)
+            setBackgroundColor(Color.BLACK)
+            setTextColor(Color.WHITE)
+        }
+        content.addView(stripWInput)
+
+        content.addView(TextView(context).apply {
+            text = "手势条高度(dp, 0=全屏)"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 12, 0, 4)
+        })
+        val stripHInput = EditText(context).apply {
+            setText(prefs.gestureStripHeight.toString())
+            setSingleLine()
+            setPadding(8, 8, 8, 8)
+            setBackgroundColor(Color.BLACK)
+            setTextColor(Color.WHITE)
+        }
+        content.addView(stripHInput)
+
+        content.addView(TextView(context).apply {
+            text = "手势条偏移(dp)"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 12, 0, 4)
+        })
+        val stripOInput = EditText(context).apply {
+            setText(prefs.gestureStripOffset.toString())
+            setSingleLine()
+            setPadding(8, 8, 8, 8)
+            setBackgroundColor(Color.BLACK)
+            setTextColor(Color.WHITE)
+        }
+        content.addView(stripOInput)
+
+        content.addView(TextView(context).apply {
+            text = "手势条透明度"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            setPadding(0, 12, 0, 4)
+        })
+        val stripAlphaSlider = SeekBar(context).apply {
+            max = 100
+            progress = (prefs.gestureStripAlpha * 100).toInt()
+        }
+        content.addView(stripAlphaSlider)
+        
+        // 锁定磁贴
+        val lockLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 12, 0, 12)
+        }
+        val lockLabel = TextView(context).apply {
+            text = "锁定磁贴布局"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        lockLayout.addView(lockLabel)
+
+        val lockSwitch = android.widget.Switch(context).apply {
+            isChecked = prefs.tilesLocked
+            setOnCheckedChangeListener { _, isChecked ->
+                prefs.tilesLocked = isChecked
+                if (isChecked) {
+                    prefs.autoPinEnabled = false
                 }
+                Toast.makeText(context, if (isChecked) "磁贴已锁定，禁止添加/删除" else "磁贴已解锁", Toast.LENGTH_SHORT).show()
+            }
+        }
+        lockLayout.addView(lockSwitch)
+        content.addView(lockLayout)
+
+        content.addView(android.widget.Button(context).apply {
+            text = "选择图标包"
+            setOnClickListener { showIconPackPicker() }
+        })
+        content.addView(android.widget.Button(context).apply {
+            text = "冻结列表"
+            setOnClickListener {
+                dismissPopup()
+                showFreezeListDialog()
+            }
+        })
+        content.addView(android.widget.Button(context).apply {
+            text = "应用"
+            setOnClickListener {
+                try {
+                    val c = colorInput.text.toString()
+                    if (c.isNotEmpty()) prefs.panelBackgroundColor = c
+                    prefs.panelBackgroundAlpha = alphaSlider.progress / 100f
+                    prefs.tileAlpha = tileAlphaSlider.progress / 100f
+                    swipeThreshold = sensSlider.progress * 2
+
+                    stripWInput.text.toString().toIntOrNull()?.let {
+                        if (it > 0) {
+                            prefs.gestureStripWidth = it
+                            destroyGestureStrip()
+                            createGestureStrip()
+                        }
+                    }
+                    stripHInput.text.toString().toIntOrNull()?.let {
+                        if (it >= 0) {
+                            prefs.gestureStripHeight = it
+                            destroyGestureStrip()
+                            createGestureStrip()
+                        }
+                    }
+                    stripOInput.text.toString().toIntOrNull()?.let {
+                        prefs.gestureStripOffset = it
+                        destroyGestureStrip()
+                        createGestureStrip()
+                    }
+                    prefs.gestureStripAlpha = stripAlphaSlider.progress / 100f
+                    destroyGestureStrip()
+                    createGestureStrip()
+
+                    val bg = bgImageInput.text.toString()
+                    if (bg.isNotEmpty()) prefs.panelBackgroundImage = bg
+                    refreshPanelBackground()
+                    dismissPopup()
+                    hidePanel()
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "Apply settings failed", e)
+                    Toast.makeText(context, "应用设置失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
+        content.addView(android.widget.Button(context).apply {
+            text = "导出设置"
+            setOnClickListener {
+                try {
+                    val prefsDir = java.io.File(context.filesDir.parent, "shared_prefs")
+                    val src = java.io.File(prefsDir, "settings.xml")
+                    val destDir = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    )
+                    val dest = java.io.File(destDir, "lumetro_backup.xml")
+                    val freezeSrc = java.io.File(prefsDir, "freeze.xml")
+                    val freezeDest = java.io.File(destDir, "lumetro_freeze_backup.xml")
+                    if (freezeSrc.exists()) freezeSrc.copyTo(freezeDest, true)
+                    val tileDbSrc = java.io.File(context.filesDir.parent, "databases/userTiles")
+                    val tileDbDest = java.io.File(destDir, "lumetro_tiles_backup.db")
+                    coroutineScope.launch(Dispatchers.IO) {
+                        db?.getTilesDao()?.getTilesData()
+                    }
+                    db?.close()
+                    if (tileDbSrc.exists()) tileDbSrc.copyTo(tileDbDest, true)
+                    src.copyTo(dest, true)
+                    Toast.makeText(context, "已导出: ${dest.absolutePath}", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "Export failed", e)
+                    Toast.makeText(context, "导出失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
+        content.addView(android.widget.Button(context).apply {
+            text = "导入设置"
+            setOnClickListener {
+                try {
+                    val prefsDir = java.io.File(context.filesDir.parent, "shared_prefs")
+                    val dest = java.io.File(prefsDir, "settings.xml")
+                    val srcDir = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    )
+                    val freezeSrcFile = java.io.File(srcDir, "lumetro_freeze_backup.xml")
+                    val freezeDestFile = java.io.File(prefsDir, "freeze.xml")
+                    if (freezeSrcFile.exists()) freezeSrcFile.copyTo(freezeDestFile, true)
+                    val tileDbSrcFile = java.io.File(srcDir, "lumetro_tiles_backup.db")
+                    val tileDbDestFile = java.io.File(context.filesDir.parent, "databases/userTiles")
+                    if (tileDbSrcFile.exists()) {
+                        db?.close()
+                        tileDbDestFile.delete()
+                        java.io.File(context.filesDir.parent, "databases/userTiles-wal").delete()
+                        java.io.File(context.filesDir.parent, "databases/userTiles-shm").delete()
+                        tileDbSrcFile.copyTo(tileDbDestFile, true)
+                    }
+                    val src = java.io.File(srcDir, "lumetro_backup.xml")
+                    if (src.exists()) {
+                        src.copyTo(dest, true)
+                        Toast.makeText(context, "已导入，重启生效", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, "备份文件不存在", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "Import failed", e)
+                    Toast.makeText(context, "导入失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
+
+        scrollView.addView(content)
+        layout.addView(scrollView)
+        val popup = PopupWindow(layout, 320.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true)
+        popup.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
+        popup.showAtLocation(contentContainerRef?.get(), Gravity.CENTER, 0, 0)
+        currentPopupRef = WeakReference(popup)
+    }
+
+    private fun showIconPackPicker() {
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 16, 16, 16)
+            setBackgroundColor(Color.DKGRAY)
+        }
+        layout.addView(TextView(context).apply {
+            text = "选择图标包"
+            textSize = 20f
+            setTextColor(Color.CYAN)
+            setPadding(0, 8, 0, 16)
+        })
+        val listLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        listLayout.addView(TextView(context).apply {
+            text = "加载中..."
+            setTextColor(Color.GRAY)
+        })
+        val scrollView = ScrollView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(300.dpToPx(), 350.dpToPx())
+        }
+        scrollView.addView(listLayout)
+        layout.addView(scrollView)
+        layout.addView(android.widget.Button(context).apply {
+            text = "关闭"
+            setOnClickListener { dismissPopup() }
+        })
+        
+        dismissPopup()
+        val popup = PopupWindow(layout, 340.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true)
+        popup.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
+        popup.showAtLocation(contentContainerRef?.get(), Gravity.CENTER, 0, 0)
+        currentPopupRef = WeakReference(popup)
+        
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                val pm = context.packageManager
+                val intents1 = pm.queryIntentActivities(Intent("org.adw.launcher.THEMES"), PackageManager.GET_META_DATA)
+                val intents2 = pm.queryIntentActivities(Intent("com.gau.go.launcherex.theme"), PackageManager.GET_META_DATA)
+                val intents3 = pm.queryIntentActivities(Intent("com.novalauncher.THEME"), PackageManager.GET_META_DATA)
+                val allIntents = (intents1 + intents2 + intents3).distinctBy { it.activityInfo.packageName }
+                val iconPacks = allIntents.mapNotNull { ri ->
+                    try {
+                        val pkg = ri.activityInfo.packageName
+                        if (pkg == context.packageName) null
+                        else {
+                            val app = pm.getApplicationInfo(pkg, 0)
+                            pkg to pm.getApplicationLabel(app).toString()
+                        }
+                    } catch (e: Exception) { null }
+                }.distinctBy { it.first }.sortedBy { it.second }
+                
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "已解冻 $count 个应用", Toast.LENGTH_SHORT).show()
-                    refreshTilesIfNeeded()
-                    refreshAppsIfNeeded()
+                    listLayout.removeAllViews()
+                    if (iconPacks.isEmpty()) {
+                        listLayout.addView(TextView(context).apply {
+                            text = "未找到图标包"
+                            setTextColor(Color.GRAY)
+                            setPadding(0, 16, 0, 0)
+                        })
+                    } else {
+                        iconPacks.forEach { (pkg, name) ->
+                            val item = TextView(context).apply {
+                                this.text = name
+                                textSize = 16f
+                                setTextColor(Color.WHITE)
+                                setPadding(16, 14, 16, 14)
+                                setBackgroundColor(Color.parseColor("#FF2A2A2A"))
+                                val params = LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT
+                                )
+                                params.setMargins(0, 0, 0, 4)
+                                layoutParams = params
+                                setOnClickListener {
+                                    prefs.iconPackPackage = pkg
+                                    reloadIconPack()
+                                    dismissPopup()
+                                    Toast.makeText(context, "已应用: $name", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            listLayout.addView(item)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    listLayout.removeAllViews()
+                    listLayout.addView(TextView(context).apply {
+                        text = "加载失败: ${e.message}"
+                        setTextColor(Color.RED)
+                    })
                 }
             }
         }
-    })
-    scrollView.addView(listLayout); layout.addView(scrollView)
-    layout.addView(android.widget.Button(context).apply { text = "关闭"; setOnClickListener { currentPopup?.dismiss() } })
-    currentPopup?.dismiss()
-    currentPopup = PopupWindow(layout, 320.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true)
-    currentPopup?.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
-    currentPopup?.showAtLocation(contentContainer, Gravity.CENTER, 0, 0)
-    scrollView.post { scrollView.scrollTo(0, freezeListScrollY) }
-}
-
-// ===== 编辑面板 =====
-private fun showEditPanel(t: TileEntity) {
-    hideEditPanel()
-    editPanelParams = WindowManager.LayoutParams((screenWidth * 0.9).toInt(), WindowManager.LayoutParams.WRAP_CONTENT, getWindowType(),
-        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.CENTER }
-    editPanelView = FrameLayout(context).apply { addView(createEditPanelView(t)); setBackgroundColor(Color.WHITE); setOnTouchListener { _, _ -> true } }
-    try { windowManager.addView(editPanelView, editPanelParams) } catch (ex: Exception) {}
-}
-private fun hideEditPanel() { editPanelView?.let { try { windowManager.removeView(it) } catch (ex: Exception) {} }; editPanelView = null; editPanelParams = null; currentPopup?.dismiss(); currentPopup = null }
-
-fun reloadIconPack() {
-    iconLoader.resetIconLoader(true)
-    iconLoader = IconLoader(prefs.iconPackPackage != null, prefs.iconPackPackage)
-    coroutineScope.launch(Dispatchers.IO) {
-        db?.getTilesDao()?.getTilesData()?.filter { it.tileType != -1 && !it.tilePackage.isNullOrEmpty() }?.forEach { iconLoader.getIconForPackage(context, it.tilePackage!!) }
-        withContext(Dispatchers.Main) { refreshTilesIfNeeded(); if (currentLevel == PanelLevel.APPS) loadAppsContent() }
     }
-}
 
-private fun createEditPanelView(t: TileEntity): View {
-    val sv = ScrollView(context)
-    val rl = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(30, 20, 30, 20) }
-    rl.addView(LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-        addView(TextView(context).apply { text = "编辑磁贴"; textSize = 18f; setTextColor(Color.BLACK); layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f) })
-        addView(TextView(context).apply { text = "✕"; textSize = 20f; setTextColor(Color.BLACK); setPadding(20, 0, 0, 0); setOnClickListener { hideEditPanel() } })
-    })
-    rl.addView(View(context).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply { topMargin = 10; bottomMargin = 10 }; setBackgroundColor(Color.LTGRAY) })
-    rl.addView(TextView(context).apply { text = "标签"; textSize = 14f; setTextColor(Color.BLACK); setPadding(0, 0, 0, 5) })
-    val li = EditText(context).apply { setText(t.tileLabel); setSingleLine(); setPadding(15, 10, 15, 10); isFocusable = true; isFocusableInTouchMode = true }
-    rl.addView(li)
-    li.setOnTouchListener { _, ev -> if (ev.action == MotionEvent.ACTION_UP) { li.requestFocus(); (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(li, InputMethodManager.SHOW_IMPLICIT) }; false }
-    rl.addView(TextView(context).apply { text = "背景"; textSize = 14f; setTextColor(Color.BLACK); setPadding(0, 15, 0, 5) })
-    val il = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-    il.addView(ImageView(context).apply { layoutParams = LinearLayout.LayoutParams(when (t.tileSize) { 1 -> 48.dpToPx(); 2 -> 72.dpToPx(); 3 -> 90.dpToPx(); 4 -> 120.dpToPx(); else -> 48.dpToPx() }, when (t.tileSize) { 1 -> 48.dpToPx(); 2 -> 72.dpToPx(); 3 -> 90.dpToPx(); 4 -> 120.dpToPx(); else -> 48.dpToPx() }); scaleType = ImageView.ScaleType.FIT_CENTER; t.tilePackage?.let { pkg -> coroutineScope.launch(Dispatchers.IO) { iconLoader.getIconForPackage(context, pkg)?.let { withContext(Dispatchers.Main) { setImageBitmap(it) } } } } })
-    il.addView(TextView(context).apply {
-        text = "点击选择背景图"; textSize = 14f; setTextColor(Color.BLUE); setPadding(15, 0, 0, 0)
-        setOnClickListener {
-            val intent = Intent(context, PanelBgPickerActivity::class.java).apply { putExtra("tile_package", t.tilePackage); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-            context.startActivity(intent)
-            hideEditPanel(); hidePanel()
+    private fun performOneKeyFreeze() {
+        val sh = ShizukuHelper.getInstance()
+        ShizukuHelper.getInstance().checkStatus()
+        if (!sh.isReady()) {
+            Toast.makeText(context, "Shizuku 未就绪", Toast.LENGTH_SHORT).show()
+            return
         }
-    })
-    il.addView(TextView(context).apply { text = "清除"; textSize = 14f; setTextColor(Color.RED); setPadding(15, 0, 0, 0); setOnClickListener { context.getSharedPreferences("tile_custom_icons", Context.MODE_PRIVATE).edit().remove("bg_" + t.tilePackage).apply(); refreshTilesIfNeeded(); hideEditPanel() } })
-    rl.addView(il)
-    rl.addView(TextView(context).apply { text = "磁贴大小"; textSize = 14f; setTextColor(Color.BLACK); setPadding(0, 15, 0, 5) })
-    val so = arrayOf("小", "中", "大", "横条", "竖条"); var ss = t.tileSize
-    val st = TextView(context).apply { text = "当前: ${so[ss]}"; setPadding(10, 5, 10, 5) }; rl.addView(st)
-    rl.addView(android.widget.Button(context).apply {
-        text = "选择大小"; setOnClickListener {
-            currentPopup?.dismiss()
-            val scrollView = ScrollView(context).apply { layoutParams = LinearLayout.LayoutParams(250.dpToPx(), 350.dpToPx()) }
-            val colorList = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(8, 8, 8, 8) }
-            so.forEachIndexed { i, o -> colorList.addView(tv(o) { ss = i; st.text = "当前: ${so[ss]}"; currentPopup?.dismiss() }) }
-            scrollView.addView(colorList)
-            currentPopup = PopupWindow(scrollView, 250.dpToPx(), 350.dpToPx(), true); showPopup(currentPopup!!, it)
+        val list = FreezeManager.getList(context)
+        if (list.isEmpty()) {
+            Toast.makeText(context, "冻结列表为空", Toast.LENGTH_SHORT).show()
+            return
         }
-    })
-    rl.addView(TextView(context).apply { text = "颜色"; textSize = 14f; setTextColor(Color.BLACK); setPadding(0, 15, 0, 5) })
-    var sc = t.tileColor ?: "#FF0050EF"
-    val cp = View(context).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 40.dpToPx()).apply { setMargins(0, 5, 0, 5) }; setBackgroundColor(Color.parseColor(sc)) }; rl.addView(cp)
-    rl.addView(android.widget.Button(context).apply {
-        text = "选择颜色"; setOnClickListener {
-            currentPopup?.dismiss()
-            val scrollView = ScrollView(context).apply { layoutParams = LinearLayout.LayoutParams(250.dpToPx(), 400.dpToPx()) }
-            val colorList = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(8, 8, 8, 8) }
-            standardColors.forEach { (c, n) -> val il2 = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(16, 8, 16, 8) }; il2.addView(View(context).apply { layoutParams = LinearLayout.LayoutParams(40.dpToPx(), 40.dpToPx()); setBackgroundColor(Color.parseColor(c)) }); il2.addView(TextView(context).apply { text = n; textSize = 14f; setTextColor(Color.WHITE); setPadding(16, 0, 0, 0) }); il2.setOnClickListener { sc = c; cp.setBackgroundColor(Color.parseColor(sc)); currentPopup?.dismiss() }; colorList.addView(il2) }
-            scrollView.addView(colorList)
-            currentPopup = PopupWindow(scrollView, 250.dpToPx(), 400.dpToPx(), true); showPopup(currentPopup!!, it)
+        coroutineScope.launch(Dispatchers.IO) {
+            var count = 0
+            for (pkg in list) {
+                if (FreezeManager.isFrozen(context, pkg)) continue
+                iconLoader.getIconForPackage(context, pkg)
+                if (sh.freezeApp(pkg)) {
+                    FreezeManager.setFrozen(context, pkg, true)
+                    count++
+                    delay(50)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "已冻结 $count 个应用", Toast.LENGTH_SHORT).show()
+                refreshTilesIfNeeded()
+                refreshAppsIfNeeded()
+            }
         }
-    })
-    rl.addView(TextView(context).apply { text = "圆角大小"; textSize = 14f; setTextColor(Color.BLACK); setPadding(0, 15, 0, 5) })
-    val csb = SeekBar(context).apply { max = 20; progress = if (t.tileCornerRadius != -1) t.tileCornerRadius else 0 }; rl.addView(csb)
-    val cv = TextView(context).apply { text = "${csb.progress} dp"; setPadding(0, 5, 0, 5) }; rl.addView(cv)
-    csb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener { override fun onProgressChanged(sb: SeekBar?, p: Int, fu: Boolean) { cv.text = "$p dp" }; override fun onStartTrackingTouch(sb: SeekBar?) {}; override fun onStopTrackingTouch(sb: SeekBar?) {} })
-    rl.addView(android.widget.Button(context).apply {
-        text = "保存"; layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 20 }
-        setOnClickListener { (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(li.windowToken, 0); if (li.text.isNotEmpty()) t.tileLabel = li.text.toString(); t.tileSize = ss; t.tileColor = sc; t.tileCornerRadius = csb.progress; coroutineScope.launch(Dispatchers.IO) { db?.getTilesDao()?.updateTile(t); withContext(Dispatchers.Main) { Toast.makeText(context, "保存成功", Toast.LENGTH_SHORT).show(); refreshTilesIfNeeded(); hideEditPanel() } } }
-    })
-    rl.addView(View(context).apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 64.dpToPx()) })
-    sv.addView(rl); return sv
-}
+    }
+
+    private fun showFreezeListDialog() {
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 16, 16, 16)
+            setBackgroundColor(Color.DKGRAY)
+        }
+        layout.addView(TextView(context).apply {
+            text = "可冻结应用列表"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            setPadding(0, 8, 0, 16)
+        })
+        val scrollView = ScrollView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(280.dpToPx(), 350.dpToPx())
+        }
+        val listLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val freezeList = FreezeManager.getList(context)
+        val pm = context.packageManager
+        val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+        val appList = ArrayList<App>()
+        for (info in installedApps) {
+            if (info.packageName == context.packageName) continue
+            if ((info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0) continue
+            appList.add(App(info.loadLabel(pm).toString(), info.packageName, 0))
+        }
+        appList.sortBy { it.mName }
+        
+        for (app in appList) {
+            val pkg = app.mPackage ?: continue
+            val isInList = freezeList.contains(pkg)
+            val itemLayout = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(8, 8, 8, 8)
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            itemLayout.addView(TextView(context).apply {
+                text = app.mName
+                setTextColor(Color.WHITE)
+                textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            itemLayout.addView(TextView(context).apply {
+                text = if (isInList) "移除" else "添加"
+                setTextColor(if (isInList) Color.RED else Color.GREEN)
+                textSize = 14f
+                setPadding(16, 4, 0, 4)
+                setOnClickListener {
+                    if (isInList) FreezeManager.removeFromList(context, pkg)
+                    else FreezeManager.addToList(context, pkg)
+                    freezeListScrollY = scrollView.scrollY
+                    dismissPopup()
+                    showFreezeListDialog()
+                }
+            })
+            listLayout.addView(itemLayout)
+        }
+        
+        val hiddenApps = FreezeManager.getHiddenList(context)
+        if (hiddenApps.isNotEmpty()) {
+            listLayout.addView(TextView(context).apply {
+                text = "已隐藏应用"
+                textSize = 16f
+                setTextColor(Color.YELLOW)
+                setPadding(0, 16, 0, 8)
+            })
+            for (pkg in hiddenApps) {
+                val name = try {
+                    pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+                } catch (e: Exception) { pkg }
+                val itemLayout = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(8, 8, 8, 8)
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                itemLayout.addView(TextView(context).apply {
+                    text = name
+                    setTextColor(Color.WHITE)
+                    textSize = 14f
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                itemLayout.addView(TextView(context).apply {
+                    text = "恢复"
+                    setTextColor(Color.GREEN)
+                    textSize = 14f
+                    setPadding(16, 4, 0, 4)
+                    setOnClickListener {
+                        FreezeManager.toggleHidden(context, pkg)
+                        dismissPopup()
+                        showFreezeListDialog()
+                    }
+                })
+                listLayout.addView(itemLayout)
+            }
+        }
+        
+        layout.addView(android.widget.Button(context).apply {
+            text = "一键解冻"
+            setOnClickListener {
+                dismissPopup()
+                coroutineScope.launch(Dispatchers.IO) {
+                    val list = FreezeManager.getList(context)
+                    val sh = ShizukuHelper.getInstance()
+                    var count = 0
+                    for (pkg in list) {
+                        if (!FreezeManager.isFrozen(context, pkg)) continue
+                        if (sh.unfreezeApp(pkg)) {
+                            FreezeManager.setFrozen(context, pkg, false)
+                            count++
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "已解冻 $count 个应用", Toast.LENGTH_SHORT).show()
+                        refreshTilesIfNeeded()
+                        refreshAppsIfNeeded()
+                    }
+                }
+            }
+        })
+        scrollView.addView(listLayout)
+        layout.addView(scrollView)
+        layout.addView(android.widget.Button(context).apply {
+            text = "关闭"
+            setOnClickListener { dismissPopup() }
+        })
+        
+        dismissPopup()
+        val popup = PopupWindow(layout, 320.dpToPx(), LinearLayout.LayoutParams.WRAP_CONTENT, true)
+        popup.setBackgroundDrawable(ContextCompat.getDrawable(context, android.R.drawable.dialog_holo_light_frame))
+        popup.showAtLocation(contentContainerRef?.get(), Gravity.CENTER, 0, 0)
+        currentPopupRef = WeakReference(popup)
+        scrollView.post { scrollView.scrollTo(0, freezeListScrollY) }
+    }
+
+    // ===== 编辑面板 =====
+    private fun showEditPanel(tile: TileEntity) {
+        hideEditPanel()
+        editPanelParams = WindowManager.LayoutParams(
+            (screenWidth * 0.9).toInt(),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            getWindowType(),
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.CENTER }
+        
+        val view = createEditPanelView(tile)
+        editPanelViewRef = WeakReference(view)
+        try {
+            windowManager.addView(view, editPanelParams)
+        } catch (ex: Exception) {
+            Log.e("SidebarManager", "showEditPanel failed", ex)
+        }
+    }
+
+    private fun hideEditPanel() {
+        editPanelViewRef?.get()?.let {
+            try { windowManager.removeView(it) } catch (ex: Exception) { }
+        }
+        editPanelViewRef = null
+        editPanelParams = null
+        dismissPopup()
+    }
+
+    fun reloadIconPack() {
+        iconLoader.resetIconLoader(true)
+        iconLoader = IconLoader(prefs.iconPackPackage != null, prefs.iconPackPackage)
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                db?.getTilesDao()?.getTilesData()
+                    ?.filter { it.tileType != -1 && !it.tilePackage.isNullOrEmpty() }
+                    ?.forEach { iconLoader.getIconForPackage(context, it.tilePackage!!) }
+                withContext(Dispatchers.Main) {
+                    refreshTilesIfNeeded()
+                    if (currentLevel == PanelLevel.APPS) loadAppsContent()
+                }
+            } catch (e: Exception) {
+                Log.e("SidebarManager", "reloadIconPack failed", e)
+            }
+        }
+    }
+
+    private fun createEditPanelView(tile: TileEntity): FrameLayout {
+        val container = FrameLayout(context).apply {
+            setBackgroundColor(Color.WHITE)
+            setOnTouchListener { _, _ -> true }
+        }
+        
+        val sv = ScrollView(context)
+        val rl = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(30, 20, 30, 20)
+        }
+        
+        rl.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(context).apply {
+                text = "编辑磁贴"
+                textSize = 18f
+                setTextColor(Color.BLACK)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            addView(TextView(context).apply {
+                text = "✕"
+                textSize = 20f
+                setTextColor(Color.BLACK)
+                setPadding(20, 0, 0, 0)
+                setOnClickListener { hideEditPanel() }
+            })
+        })
+        
+        rl.addView(View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                1
+            ).apply {
+                topMargin = 10
+                bottomMargin = 10
+            }
+            setBackgroundColor(Color.LTGRAY)
+        })
+        
+        rl.addView(TextView(context).apply {
+            text = "标签"
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setPadding(0, 0, 0, 5)
+        })
+        val labelInput = EditText(context).apply {
+            setText(tile.tileLabel)
+            setSingleLine()
+            setPadding(15, 10, 15, 10)
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
+        rl.addView(labelInput)
+        labelInput.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_UP) {
+                labelInput.requestFocus()
+                (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .showSoftInput(labelInput, InputMethodManager.SHOW_IMPLICIT)
+            }
+            false
+        }
+        
+        rl.addView(TextView(context).apply {
+            text = "背景"
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setPadding(0, 15, 0, 5)
+        })
+        val iconLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        iconLayout.addView(ImageView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                when (tile.tileSize) {
+                    1 -> 48.dpToPx()
+                    2 -> 72.dpToPx()
+                    3 -> 90.dpToPx()
+                    4 -> 120.dpToPx()
+                    else -> 48.dpToPx()
+                },
+                when (tile.tileSize) {
+                    1 -> 48.dpToPx()
+                    2 -> 72.dpToPx()
+                    3 -> 90.dpToPx()
+                    4 -> 120.dpToPx()
+                    else -> 48.dpToPx()
+                }
+            )
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            tile.tilePackage?.let { pkg ->
+                coroutineScope.launch(Dispatchers.IO) {
+                    iconLoader.getIconForPackage(context, pkg)?.let {
+                        withContext(Dispatchers.Main) { setImageBitmap(it) }
+                    }
+                }
+            }
+        })
+        iconLayout.addView(TextView(context).apply {
+            text = "点击选择背景图"
+            textSize = 14f
+            setTextColor(Color.BLUE)
+            setPadding(15, 0, 0, 0)
+            setOnClickListener {
+                val intent = Intent(context, PanelBgPickerActivity::class.java).apply {
+                    putExtra("tile_package", tile.tilePackage)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                hideEditPanel()
+                hidePanel()
+            }
+        })
+        iconLayout.addView(TextView(context).apply {
+            text = "清除"
+            textSize = 14f
+            setTextColor(Color.RED)
+            setPadding(15, 0, 0, 0)
+            setOnClickListener {
+                context.getSharedPreferences("tile_custom_icons", Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("bg_" + tile.tilePackage)
+                    .apply()
+                refreshTilesIfNeeded()
+                hideEditPanel()
+            }
+        })
+        rl.addView(iconLayout)
+        
+        rl.addView(TextView(context).apply {
+            text = "磁贴大小"
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setPadding(0, 15, 0, 5)
+        })
+        val sizeOptions = arrayOf("小", "中", "大", "横条", "竖条")
+        var selectedSize = tile.tileSize
+        val sizeText = TextView(context).apply {
+            text = "当前: ${sizeOptions[selectedSize]}"
+            setPadding(10, 5, 10, 5)
+        }
+        rl.addView(sizeText)
+        rl.addView(android.widget.Button(context).apply {
+            text = "选择大小"
+            setOnClickListener {
+                dismissPopup()
+                val scrollView = ScrollView(context).apply {
+                    layoutParams = LinearLayout.LayoutParams(250.dpToPx(), 350.dpToPx())
+                }
+                val colorList = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setBackgroundColor(Color.BLACK)
+                    setPadding(8, 8, 8, 8)
+                }
+                sizeOptions.forEachIndexed { i, option ->
+                    colorList.addView(createPopupText(option) {
+                        selectedSize = i
+                        sizeText.text = "当前: ${sizeOptions[selectedSize]}"
+                        dismissPopup()
+                    })
+                }
+                scrollView.addView(colorList)
+                val popup = PopupWindow(scrollView, 250.dpToPx(), 350.dpToPx(), true)
+                showPopup(popup, it)
+                currentPopupRef = WeakReference(popup)
+            }
+        })
+        
+        rl.addView(TextView(context).apply {
+            text = "颜色"
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setPadding(0, 15, 0, 5)
+        })
+        var selectedColor = tile.tileColor ?: "#FF0050EF"
+        val colorPreview = View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                40.dpToPx()
+            ).apply { setMargins(0, 5, 0, 5) }
+            setBackgroundColor(Color.parseColor(selectedColor))
+        }
+        rl.addView(colorPreview)
+        rl.addView(android.widget.Button(context).apply {
+            text = "选择颜色"
+            setOnClickListener {
+                dismissPopup()
+                val scrollView = ScrollView(context).apply {
+                    layoutParams = LinearLayout.LayoutParams(250.dpToPx(), 400.dpToPx())
+                }
+                val colorList = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setBackgroundColor(Color.BLACK)
+                    setPadding(8, 8, 8, 8)
+                }
+                standardColors.forEach { (color, name) ->
+                    val item = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(16, 8, 16, 8)
+                    }
+                    item.addView(View(context).apply {
+                        layoutParams = LinearLayout.LayoutParams(40.dpToPx(), 40.dpToPx())
+                        setBackgroundColor(Color.parseColor(color))
+                    })
+                    item.addView(TextView(context).apply {
+                        text = name
+                        textSize = 14f
+                        setTextColor(Color.WHITE)
+                        setPadding(16, 0, 0, 0)
+                    })
+                    item.setOnClickListener {
+                        selectedColor = color
+                        colorPreview.setBackgroundColor(Color.parseColor(selectedColor))
+                        dismissPopup()
+                    }
+                    colorList.addView(item)
+                }
+                scrollView.addView(colorList)
+                val popup = PopupWindow(scrollView, 250.dpToPx(), 400.dpToPx(), true)
+                showPopup(popup, it)
+                currentPopupRef = WeakReference(popup)
+            }
+        })
+        
+        rl.addView(TextView(context).apply {
+            text = "圆角大小"
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setPadding(0, 15, 0, 5)
+        })
+        val cornerSeekBar = SeekBar(context).apply {
+            max = 20
+            progress = if (tile.tileCornerRadius != -1) tile.tileCornerRadius else 0
+        }
+        rl.addView(cornerSeekBar)
+        val cornerValue = TextView(context).apply {
+            text = "${cornerSeekBar.progress} dp"
+            setPadding(0, 5, 0, 5)
+        }
+        rl.addView(cornerValue)
+        cornerSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                cornerValue.text = "$progress dp"
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        
+        rl.addView(android.widget.Button(context).apply {
+            text = "保存"
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 20 }
+            setOnClickListener {
+                (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .hideSoftInputFromWindow(labelInput.windowToken, 0)
+                if (labelInput.text.isNotEmpty()) tile.tileLabel = labelInput.text.toString()
+                tile.tileSize = selectedSize
+                tile.tileColor = selectedColor
+                tile.tileCornerRadius = cornerSeekBar.progress
+                coroutineScope.launch(Dispatchers.IO) {
+                    try {
+                        db?.getTilesDao()?.updateTile(tile)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "保存成功", Toast.LENGTH_SHORT).show()
+                            refreshTilesIfNeeded()
+                            hideEditPanel()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("SidebarManager", "Save tile failed", e)
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "保存失败", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        })
+        rl.addView(View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                64.dpToPx()
+            )
+        })
+        sv.addView(rl)
+        container.addView(sv)
+        return container
+    }
+
     // ===== 应用列表 =====
+    private fun loadAppsContent() {
+        val contentContainer = contentContainerRef?.get()
+        if (contentContainer == null) {
+            Log.e("SidebarManager", "loadAppsContent: contentContainer is null")
+            return
+        }
+        contentContainer.removeAllViews()
+        
+        if (cachedApps.isEmpty()) {
+            android.util.Log.d("SidebarManager", "loadAppsContent: cachedApps is empty, retrying...")
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                loadAppsContent()
+            }, 300)
+            return
+        }
+        
+        var panel = appListPanelRef?.get()
+        if (panel == null) {
+            panel = AppListPanel(
+                context = context,
+                iconLoader = iconLoader,
+                coroutineScope = coroutineScope,
+                onHidePanel = { hidePanel() },
+                onRefreshTiles = { refreshTilesIfNeeded() },
+                onShowSettings = { showPanelBgDialog() },
+                onShowFreezeDialog = { showFreezeListDialog() },
+                onPinApp = { app -> pinApp(app) },
+                onRefreshApps = { refreshAppsIfNeeded() }
+            )
+            appListPanelRef = WeakReference(panel)
+        }
+        
+        val view = panel.createView()
+        if (view != null) {
+            contentContainer.addView(view)
+            panel.loadApps(filteredApps())
+        }
+    }
 
-private fun loadAppsContent() {
-    val ct = contentContainer ?: return
-    ct.removeAllViews()
-    
-    // 如果数据未加载，延迟重试
-    if (cachedApps.isEmpty()) {
-        android.util.Log.d("SidebarManager", "loadAppsContent: cachedApps is empty, retrying...")
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            loadAppsContent()
-        }, 300)
-        return
-    }
-    
-    if (appListPanel == null) {
-        appListPanel = AppListPanel(
-            context = context,
-            iconLoader = iconLoader,
-            coroutineScope = coroutineScope,
-            onHidePanel = { hidePanel() },
-            onRefreshTiles = { refreshTilesIfNeeded() },
-            onShowSettings = { showPanelBgDialog() },
-            onShowFreezeDialog = { showFreezeListDialog() },
-            onPinApp = { app -> pinApp(app) },
-            onRefreshApps = { refreshAppsIfNeeded() }
-        )
-    }
-    
-    val view = appListPanel?.createView()
-    if (view != null) {
-        ct.addView(view)
-        appListPanel?.loadApps(filteredApps())
-    }
-}
-
-    private fun showAppPopup(an: View, a: App, inFreezeList: Boolean = false) {
-        currentPopup?.dismiss()
-        val pv = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK); setPadding(8, 8, 8, 8) }
-        pv.addView(tv("固定到开始屏幕") { currentPopup?.dismiss(); pinApp(a) })
+    private fun showAppPopup(anchor: View, app: App, inFreezeList: Boolean = false) {
+        dismissPopup()
+        val pv = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
+            setPadding(8, 8, 8, 8)
+        }
+        pv.addView(createPopupText("固定到开始屏幕") {
+            dismissPopup()
+            pinApp(app)
+        })
+        
         if (inFreezeList) {
-            val isFrozen = a.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
-            pv.addView(tv(if (isFrozen) "解冻应用" else "冻结应用") {
-                currentPopup?.dismiss()
-                a.mPackage?.let { pkg ->
+            val isFrozen = app.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
+            pv.addView(createPopupText(if (isFrozen) "解冻应用" else "冻结应用") {
+                dismissPopup()
+                app.mPackage?.let { pkg ->
                     coroutineScope.launch(Dispatchers.IO) {
                         val sh = ShizukuHelper.getInstance()
                         if (isFrozen) {
-                            if (sh.unfreezeApp(pkg)) { FreezeManager.setFrozen(context, pkg, false); withContext(Dispatchers.Main) { refreshTilesIfNeeded(); Toast.makeText(context, "已解冻", Toast.LENGTH_SHORT).show() } }
-                            else withContext(Dispatchers.Main) { Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show() }
+                            if (sh.unfreezeApp(pkg)) {
+                                FreezeManager.setFrozen(context, pkg, false)
+                                withContext(Dispatchers.Main) {
+                                    refreshTilesIfNeeded()
+                                    Toast.makeText(context, "已解冻", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "解冻失败", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         } else {
-                            if (sh.freezeApp(pkg)) { FreezeManager.setFrozen(context, pkg, true); withContext(Dispatchers.Main) { refreshTilesIfNeeded(); Toast.makeText(context, "已冻结", Toast.LENGTH_SHORT).show() } }
-                            else withContext(Dispatchers.Main) { Toast.makeText(context, "冻结失败", Toast.LENGTH_SHORT).show() }
+                            if (sh.freezeApp(pkg)) {
+                                FreezeManager.setFrozen(context, pkg, true)
+                                withContext(Dispatchers.Main) {
+                                    refreshTilesIfNeeded()
+                                    Toast.makeText(context, "已冻结", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    Toast.makeText(context, "冻结失败", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                     }
                 }
             })
         } else {
-            pv.addView(tv("添加到冻结列表") {
-                currentPopup?.dismiss()
-                a.mPackage?.let { FreezeManager.addToList(context, it) }
+            pv.addView(createPopupText("添加到冻结列表") {
+                dismissPopup()
+                app.mPackage?.let { FreezeManager.addToList(context, it) }
                 refreshAppsIfNeeded()
             })
         }
-        val isHidden = a.mPackage?.let { FreezeManager.getHiddenList(context).contains(it) } ?: false
-        pv.addView(tv(if (isHidden) "取消隐藏" else "隐藏应用") {
-            currentPopup?.dismiss()
-            a.mPackage?.let { FreezeManager.toggleHidden(context, it) }
+        
+        val isHidden = app.mPackage?.let { FreezeManager.getHiddenList(context).contains(it) } ?: false
+        pv.addView(createPopupText(if (isHidden) "取消隐藏" else "隐藏应用") {
+            dismissPopup()
+            app.mPackage?.let { FreezeManager.toggleHidden(context, it) }
             refreshAppsIfNeeded()
         })
-        pv.addView(tv("应用信息") { currentPopup?.dismiss(); context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:${a.mPackage}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) })
-        currentPopup = PopupWindow(pv, WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, true).apply { setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT)); showAtLocation(an, Gravity.CENTER, 0, 0) }
-    }
-
-    private fun pinApp(a: App) {
-    val pkg = a.mPackage ?: return
-    // 锁定状态下禁止固定应用
-    if (prefs.tilesLocked) {
-        Toast.makeText(context, "磁贴已锁定，无法固定", Toast.LENGTH_SHORT).show()
-        return
-    }
-    coroutineScope.launch(Dispatchers.IO) {
-        val dao = db?.getTilesDao(); val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
-        // 检查是否已固定，避免重复
-        if (tiles.any { it.tilePackage == pkg && it.tileType != -1 }) return@launch
-        val slot = tiles.indexOfFirst { it.tileType == -1 }
-        if (slot >= 0) {
-            // 跳过系统应用和非启动器应用
-            val info = packageManager.getApplicationInfo(pkg, 0)
-            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
-            if (packageManager.queryIntentActivities(intent, 0).isEmpty()) return@launch
-            val name = try { packageManager.getApplicationLabel(info).toString() } catch (ex: Exception) { pkg.substringAfterLast(".") }
-            tiles[slot] = TileEntity(tiles[slot].id, slot, null, -1, 0, 0, name, pkg)
-            dao.updateAllTiles(tiles); withContext(Dispatchers.Main) { refreshTilesIfNeeded() }
-        }
-    }
-}
-
-    // ===== 切换与动画 =====
-    private fun switchToLevel(lv: PanelLevel) {
-        if (lv == PanelLevel.APPS && currentLevel == PanelLevel.TILES) tilesRecyclerView?.animate()?.scaleX(0.9f)?.scaleY(0.9f)?.alpha(0.5f)?.setDuration(200)?.start()
-        else if (lv == PanelLevel.TILES && currentLevel == PanelLevel.APPS) tilesRecyclerView?.animate()?.scaleX(1f)?.scaleY(1f)?.alpha(1f)?.setDuration(200)?.start()
-        when (lv) {
-            PanelLevel.TILES -> { if (tilesRecyclerView == null) loadTilesContent() else if (refreshTilesPending) { tileAdapter?.updateData(cachedTiles); refreshTilesPending = false } }
-            PanelLevel.APPS -> { if (appsRecyclerView == null) loadAppsContent() }
-            PanelLevel.HIDDEN -> {}
-        }
-        currentLevel = lv
-    }
-
-    private fun anim(tx: Int, tl: PanelLevel) {
-    currentAnimator?.cancel()
-    switchToLevel(tl)
-    val sx = panelParams?.x ?: hiddenX
-    val sh = tl == PanelLevel.HIDDEN
-    
-    currentAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 350
-        interpolator = DecelerateInterpolator()
-        addUpdateListener { a ->
-            val fraction = a.animatedFraction
-            // 位置动画
-            panelParams?.x = (sx + (tx - sx) * fraction).toInt()
-            
-            // 只有应用列表才做缩放动画，磁贴面板只平移
-            if (tl == PanelLevel.APPS) {
-                val scale = 0.7f + 0.3f * fraction
-                panelView?.scaleX = scale
-                panelView?.scaleY = scale
-                panelView?.alpha = 0.1f + 0.9f * fraction
-            } else {
-                panelView?.scaleX = 1f
-                panelView?.scaleY = 1f
-                panelView?.alpha = 1f
-            }
-            
-            panelView?.let {
-                try { windowManager.updateViewLayout(it, panelParams) } catch (ex: Exception) {}
-            }
-        }
-        addListener(object : android.animation.AnimatorListenerAdapter() {
-            override fun onAnimationEnd(a: android.animation.Animator) {
-                if (sh && isPanelVisible) {
-                    destroyPanel()
-                    isPanelVisible = false
-                    currentLevel = PanelLevel.HIDDEN
-                    onPanelStateChangeListener?.invoke(false, PanelLevel.HIDDEN)
-                } else {
-                    panelView?.scaleX = 1f
-                    panelView?.scaleY = 1f
-                    panelView?.alpha = 1f
-                    onPanelStateChangeListener?.invoke(true, tl)
-                }
-                currentAnimator = null
+        pv.addView(createPopupText("应用信息") {
+            dismissPopup()
+            app.mPackage?.let {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:$it"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
             }
         })
-        start()
+        
+        val popup = PopupWindow(
+            pv,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            showAtLocation(anchor, Gravity.CENTER, 0, 0)
+        }
+        currentPopupRef = WeakReference(popup)
     }
-}
 
-        fun showPanel() {
+    private fun pinApp(app: App) {
+        val pkg = app.mPackage
+        if (pkg.isNullOrEmpty()) {
+            Toast.makeText(context, "包名为空，无法固定", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (prefs.tilesLocked) {
+            Toast.makeText(context, "磁贴已锁定，无法固定", Toast.LENGTH_SHORT).show()
+            return
+        }
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                val dao = db?.getTilesDao()
+                val tiles = dao?.getTilesData()?.toMutableList() ?: return@launch
+                if (tiles.any { it.tilePackage == pkg && it.tileType != -1 }) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "应用已固定", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+                val slot = tiles.indexOfFirst { it.tileType == -1 }
+                if (slot >= 0) {
+                    val info = packageManager.getApplicationInfo(pkg, 0)
+                    val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(pkg)
+                    if (packageManager.queryIntentActivities(intent, 0).isEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "无法启动该应用", Toast.LENGTH_SHORT).show()
+                        }
+                        return@launch
+                    }
+                    val name = try {
+                        packageManager.getApplicationLabel(info).toString()
+                    } catch (ex: Exception) {
+                        pkg.substringAfterLast(".")
+                    }
+                    tiles[slot] = TileEntity(
+                        tiles[slot].id,
+                        slot,
+                        null,
+                        -1,
+                        0,
+                        0,
+                        name,
+                        pkg
+                    )
+                    dao.updateAllTiles(tiles)
+                    withContext(Dispatchers.Main) {
+                        refreshTilesIfNeeded()
+                        Toast.makeText(context, "已固定: $name", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "磁贴已满", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("SidebarManager", "pinApp failed", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "固定失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // ===== 切换与动画 =====
+    private fun switchToLevel(level: PanelLevel) {
+        if (level == PanelLevel.APPS && currentLevel == PanelLevel.TILES) {
+            tilesRecyclerViewRef?.get()?.animate()
+                ?.scaleX(0.9f)?.scaleY(0.9f)?.alpha(0.5f)?.setDuration(200)?.start()
+        } else if (level == PanelLevel.TILES && currentLevel == PanelLevel.APPS) {
+            tilesRecyclerViewRef?.get()?.animate()
+                ?.scaleX(1f)?.scaleY(1f)?.alpha(1f)?.setDuration(200)?.start()
+        }
+        when (level) {
+            PanelLevel.TILES -> {
+                if (tilesRecyclerViewRef?.get() == null) loadTilesContent()
+                else if (refreshTilesPending) {
+                    tileAdapterRef?.get()?.updateData(cachedTiles)
+                    refreshTilesPending = false
+                }
+            }
+            PanelLevel.APPS -> {
+                if (appsRecyclerViewRef?.get() == null) loadAppsContent()
+            }
+            PanelLevel.HIDDEN -> {}
+        }
+        currentLevel = level
+    }
+
+    private fun anim(targetX: Int, targetLevel: PanelLevel) {
+        currentAnimatorRef?.get()?.cancel()
+        switchToLevel(targetLevel)
+        val startX = panelParams?.x ?: hiddenX
+        val shouldHide = targetLevel == PanelLevel.HIDDEN
+        
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 350
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val fraction = animation.animatedFraction
+                val currentParams = panelParams
+                if (currentParams != null) {
+                    currentParams.x = (startX + (targetX - startX) * fraction).toInt()
+                    
+                    if (targetLevel == PanelLevel.APPS) {
+                        val scale = 0.7f + 0.3f * fraction
+                        panelViewRef?.get()?.scaleX = scale
+                        panelViewRef?.get()?.scaleY = scale
+                        panelViewRef?.get()?.alpha = 0.1f + 0.9f * fraction
+                    } else {
+                        panelViewRef?.get()?.scaleX = 1f
+                        panelViewRef?.get()?.scaleY = 1f
+                        panelViewRef?.get()?.alpha = 1f
+                    }
+                    
+                    panelViewRef?.get()?.let { view ->
+                        try {
+                            windowManager.updateViewLayout(view, currentParams)
+                        } catch (e: Exception) {
+                            Log.e("SidebarManager", "updateViewLayout in anim failed", e)
+                        }
+                    }
+                }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (shouldHide && isPanelVisible) {
+                        destroyPanel()
+                        isPanelVisible = false
+                        currentLevel = PanelLevel.HIDDEN
+                        onPanelStateChangeListener?.invoke(false, PanelLevel.HIDDEN)
+                    } else {
+                        panelViewRef?.get()?.scaleX = 1f
+                        panelViewRef?.get()?.scaleY = 1f
+                        panelViewRef?.get()?.alpha = 1f
+                        onPanelStateChangeListener?.invoke(true, targetLevel)
+                    }
+                    currentAnimatorRef = null
+                }
+            })
+            start()
+        }
+        currentAnimatorRef = WeakReference(animator)
+    }
+
+    fun showPanel() {
         if (isScreenLocked()) return
         if (!isPanelVisible) {
             createPanel()
-            windowManager.addView(panelView, panelParams)
-            isPanelVisible = true
-            anim(tilesX, PanelLevel.TILES)
+            panelViewRef?.get()?.let { panelView ->
+                try {
+                    windowManager.addView(panelView, panelParams)
+                    isPanelVisible = true
+                    anim(tilesX, PanelLevel.TILES)
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "showPanel failed", e)
+                }
+            }
         }
     }
 
     fun showAppsPanel() {
         if (isScreenLocked()) return
+        
+        val workbenchManager = ru.queuejw.lumetro.components.freeform.WorkbenchManager.getInstance()
+        val workbenchHeight = workbenchManager?.getSettings()?.height?.dpToPx() ?: 180.dpToPx()
+        val screenHeight = context.resources.displayMetrics.heightPixels
+        
         if (!isPanelVisible) {
             createPanel()
-            contentContainer?.layoutParams = FrameLayout.LayoutParams(appsWidth, FrameLayout.LayoutParams.MATCH_PARENT)
-            panelParams?.x = appsX
-            windowManager.addView(panelView, panelParams)
-            isPanelVisible = true
+            contentContainerRef?.get()?.layoutParams = FrameLayout.LayoutParams(appsWidth, FrameLayout.LayoutParams.MATCH_PARENT)
+            if (panelParams != null) {
+                panelParams?.height = screenHeight - workbenchHeight
+                panelParams?.width = appsWidth
+                panelParams?.x = appsX
+                panelParams?.y = 0
+            }
+            panelViewRef?.get()?.let { panelView ->
+                try {
+                    windowManager.addView(panelView, panelParams)
+                    isPanelVisible = true
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "showAppsPanel addView failed", e)
+                    return
+                }
+            }
+        } else {
+            contentContainerRef?.get()?.layoutParams = FrameLayout.LayoutParams(appsWidth, FrameLayout.LayoutParams.MATCH_PARENT)
+            if (panelParams != null) {
+                panelParams?.height = screenHeight - workbenchHeight
+                panelParams?.width = appsWidth
+                panelParams?.x = appsX
+                panelParams?.y = 0
+            }
+            panelViewRef?.get()?.let { panelView ->
+                try {
+                    windowManager.updateViewLayout(panelView, panelParams)
+                } catch (e: Exception) {
+                    Log.e("SidebarManager", "showAppsPanel updateViewLayout failed", e)
+                }
+            }
         }
         anim(appsX, PanelLevel.APPS)
     }
 
     fun selectLetter(letter: String?) {
+        if (letter == null) return
         val pos = getLetterPositions()[letter]
         if (pos != null) {
-            appsRecyclerView?.smoothScrollToPosition(pos)
+            appsRecyclerViewRef?.get()?.smoothScrollToPosition(pos)
         }
     }
 
     fun hidePanel() {
-        appListPanel?.clearSearch()
+        appListPanelRef?.get()?.clearSearch()
         if (isPanelVisible) anim(hiddenX, PanelLevel.HIDDEN)
     }
 
     fun hidePanelImmediately() {
         if (isPanelVisible) {
             try {
-                windowManager.removeView(panelView)
-            } catch (e: Exception) {}
+                panelViewRef?.get()?.let { windowManager.removeView(it) }
+            } catch (e: Exception) { }
             isPanelVisible = false
         }
     }
 
     fun isPanelExpanded() = currentLevel != PanelLevel.HIDDEN
+
+    fun getTiles(): List<TileEntity> = cachedTiles
 
     private fun isScreenLocked(): Boolean {
         return try {
@@ -1434,44 +2518,44 @@ private fun loadAppsContent() {
     }
 
     fun destroyGestureStrip() {
-        gestureView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (ex: Exception) {}
+        gestureViewRef?.get()?.let {
+            try { windowManager.removeView(it) } catch (e: Exception) { }
         }
-        gestureView = null
+        gestureViewRef = null
         gestureParams = null
     }
 
     private fun destroyPanel() {
-        appListPanel?.clearSearch()
-        itemTouchHelper?.attachToRecyclerView(null)
-        itemTouchHelper = null
-        panelView?.let {
+        appListPanelRef?.get()?.clearResources()
+        appListPanelRef = null
+        
+        itemTouchHelperRef?.get()?.attachToRecyclerView(null)
+        itemTouchHelperRef = null
+        
+        panelViewRef?.get()?.let {
             it.setOnTouchListener(null)
             (it as? ViewGroup)?.removeAllViews()
-            try {
-                windowManager.removeView(it)
-            } catch (ex: Exception) {}
+            try { windowManager.removeView(it) } catch (e: Exception) { }
         }
-        panelView = null
+        panelViewRef = null
         panelParams = null
-        contentContainer = null
-        tilesRecyclerView = null
-        appsRecyclerView = null
-        tileAdapter = null
-        appAdapter = null
+        contentContainerRef = null
+        tilesRecyclerViewRef = null
+        appsRecyclerViewRef = null
+        tileAdapterRef = null
+        appAdapterRef = null
     }
 
     fun destroy() {
-        currentAnimator?.cancel()
-        currentAnimator = null
+        currentAnimatorRef?.get()?.cancel()
+        currentAnimatorRef = null
         hideEditPanel()
+        dismissPopup()
         destroyPanel()
         destroyGestureStrip()
         isPanelVisible = false
         currentLevel = PanelLevel.HIDDEN
-        db?.close()
+        try { db?.close() } catch (e: Exception) { }
         db = null
         coroutineScope.cancel()
     }

@@ -3,6 +3,7 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+<uses-permission android:name="android.permission.SYSTEM_OVERLAY_WINDOW" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
@@ -12,6 +13,8 @@
     <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE" />
 
     <application
+    android:allowBackup="true"
+    android:fullBackupContent="@xml/backup_rules"
         android:name=".components.core.Lumetro"
         android:configChanges="screenSize|orientation|screenLayout|navigation"
         android:enableOnBackInvokedCallback="true"
@@ -44,6 +47,11 @@
             android:configChanges="screenSize|orientation"
             android:exported="true"
             android:windowSoftInputMode="adjustPan" />
+        
+        <activity
+    android:name="ru.queuejw.lumetro.components.freeform.WorkbenchSettingsActivity"
+    android:theme="@style/Theme.AppCompat.NoActionBar"
+    android:exported="true" />
 
         <activity
             android:name=".settings.SettingsActivity"

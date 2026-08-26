@@ -30,7 +30,6 @@ import android.widget.Toast
 import kotlinx.coroutines.*
 import kotlin.math.sqrt
 import kotlin.math.atan2
-import ru.queuejw.lumetro.components.core.AppManager
 import ru.queuejw.lumetro.components.core.icons.IconLoader
 import ru.queuejw.lumetro.components.core.sidebar.AppListPanel
 import ru.queuejw.lumetro.components.freeform.helper.FreeformHackHelper
@@ -45,10 +44,6 @@ class WorkbenchOverlay(
     private val service: AccessibilityService,
     private val manager: WorkbenchManager
 ) {
-
-    companion object {
-        private val TAG = "WorkbenchOverlay"
-    }
 
     private val context: Context = service.applicationContext
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -71,7 +66,6 @@ class WorkbenchOverlay(
     private var isAppsPanelShowing = false
     private var appListPanel: AppListPanel? = null
     private val cachedApps = mutableListOf<App>()
-    private var appListPanelReady = false
 
     // ========== 数据 ==========
     private val MAX_SLOTS = 7
@@ -86,6 +80,8 @@ class WorkbenchOverlay(
     private enum class Mode {
         NORMAL, ADD, REMOVE
     }
+    
+    private val TAG = "WorkbenchOverlay"
     private var currentMode = Mode.NORMAL
     private var foregroundPackage = ""
 
@@ -196,8 +192,8 @@ class WorkbenchOverlay(
 
         val displayMetrics = context.resources.displayMetrics
         val screenWidth = displayMetrics.widthPixels
-        val workbenchHeight = settings.height.dpToPx()
-        barHeight = workbenchHeight
+        val navBarHeight = getNavBarHeight()
+        barHeight = navBarHeight
 
         val container = createWorkbenchView(screenWidth)
         overlayView = container
@@ -231,10 +227,18 @@ class WorkbenchOverlay(
             e.printStackTrace()
         }
 
+        // ========== 禁用工作台内部的旧手势条，由 LeftGestureStripManager 替代 ==========
+        // createGestureStrip()
+        // ===============================================================================
+
         updatePageIndicator()
     }
 
     fun hide() {
+        // ========== 禁用工作台内部的旧手势条 ==========
+        // destroyGestureStrip()
+        // ==============================================
+
         if (isAppsPanelShowing) {
             appListPanel?.clearSearch()
             hideAppsList()
@@ -257,184 +261,170 @@ class WorkbenchOverlay(
     }
 
     fun isShowing(): Boolean = isShowing
+    
+    /**
+ * 强制刷新所有图标（图标包切换后调用）
+ */
+fun forceRefreshIcons() {
+    Log.d(TAG, "=== forceRefreshIcons() 被调用 ===")
+    
+    // 1. 刷新工作台槽位
+    refreshAppSlots()
+    
+    // 2. 刷新应用列表面板（如果已打开）
+    if (isAppsPanelShowing && appListPanel != null) {
+        val apps = manager.getCachedApps()
+        appListPanel?.refresh(apps)
+        Log.d(TAG, "App list panel refreshed")
+    }
+    
+    // 3. 预加载所有应用图标到缓存
+    val apps = manager.getCachedApps()
+    var count = 0
+    for (app in apps) {
+        app.mPackage?.let { pkg ->
+            val icon = iconLoader?.getIconForPackage(context, pkg)
+            if (icon != null) {
+                count++
+            }
+        }
+    }
+    Log.d(TAG, "Preloaded $count icons")
+}
 
     // ========== 应用列表面板 ==========
-    private fun writeLog(message: String) {
-        try {
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, "workbench_debug.txt")
-            val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault())
-                .format(Date())
-            file.appendText("[$timestamp] $message\n")
-        } catch (e: Exception) { }
-    }
-
     fun showAppsList() {
-    writeLog("=== showAppsList 开始 ===")
-    if (isAppsPanelShowing) {
-        writeLog("isAppsPanelShowing=true, 隐藏并返回")
-        hideAppsList()
-        return
-    }
-
-    try {
-        writeLog("开始加载应用列表")
-        Toast.makeText(context, "加载中...", Toast.LENGTH_SHORT).show()
-
-        val pm = context.packageManager
-        val all = pm.getInstalledApplications(PackageManager.GET_META_DATA or PackageManager.GET_DISABLED_COMPONENTS)
-        writeLog("总应用数: ${all.size}")
-
-        val list = ArrayList<App>()
-        for (info in all) {
-            if (info.packageName == context.packageName) continue
-            val activities = pm.queryIntentActivities(
-                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(info.packageName),
-                PackageManager.GET_DISABLED_COMPONENTS
-            )
-            if (activities.isEmpty()) continue
-            list.add(App(info.loadLabel(pm).toString(), info.packageName, 0))
-        }
-        cachedApps.clear()
-        cachedApps.addAll(list)
-        writeLog("过滤后应用数: ${cachedApps.size}")
-
-        if (cachedApps.isEmpty()) {
-            writeLog("应用列表为空")
-            Toast.makeText(context, "没有应用", Toast.LENGTH_SHORT).show()
+        if (isAppsPanelShowing) {
+            hideAppsList()
             return
         }
 
-        if (appListPanel == null) {
-            writeLog("创建 AppListPanel")
-            val loader = iconLoader ?: IconLoader(false, null)
-            appListPanel = AppListPanel(
-                context = context,
-                iconLoader = loader,
-                coroutineScope = coroutineScope,
-                onHidePanel = { hideAppsList() },
-                onRefreshTiles = {},
-                onShowSettings = {
-                    try {
-                        val intent = Intent(context, WorkbenchSettingsActivity::class.java)
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                        hideAppsList()
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                onShowFreezeDialog = {},
-                onPinApp = {},
-                onRefreshApps = {}
-            )
-        }
-
-        appListPanel?.loadApps(cachedApps)
-        writeLog("数据已加载到 AppListPanel")
-
-        val screenWidth = context.resources.displayMetrics.widthPixels
-        val screenHeight = context.resources.displayMetrics.heightPixels
-        val appsWidth = (screenWidth * 0.85).toInt()
-        val workbenchHeight = settings.height.dpToPx()
-
-        // ========== 创建蒙版容器（半透明背景，点击外部关闭） ==========
-        val maskContainer = FrameLayout(context).apply {
-            setBackgroundColor(Color.parseColor("#CC000000"))
-            setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_DOWN) {
-                    hideAppsList()
-                    true
-                } else {
-                    false
-                }
-            }
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        // ========== 内容容器（居中显示应用列表） ==========
-        val contentContainer = FrameLayout(context).apply {
-            setBackgroundColor(Color.BLACK)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                outlineProvider = object : android.view.ViewOutlineProvider() {
-                    override fun getOutline(view: View, outline: android.graphics.Outline) {
-                        outline.setRoundRect(0, 0, view.width, view.height, 24.dpToPx().toFloat())
-                    }
-                }
-                clipToOutline = true
-                elevation = 24f
-            }
-        }
-
-        val contentParams = FrameLayout.LayoutParams(
-            appsWidth,
-            screenHeight - workbenchHeight - 40.dpToPx()
-        ).apply {
-            gravity = Gravity.CENTER
-        }
-        contentContainer.layoutParams = contentParams
-
-        val view = appListPanel?.createView()
-        if (view != null) {
-            contentContainer.addView(view)
-            writeLog("view 已添加到 contentContainer")
-        } else {
-            writeLog("view 为 null")
-        }
-
-        maskContainer.addView(contentContainer)
-
-        // ========== 添加到 WindowManager（作为独立窗口） ==========
-        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        } else {
-            WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
-        }
-        writeLog("windowType: $windowType")
-
-        appsPanelParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            windowType,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.CENTER
-            x = 0
-            y = 0
-        }
-        writeLog("appsPanelParams 创建成功: width=${appsPanelParams?.width}, height=${appsPanelParams?.height}")
-
-        appsPanelView = maskContainer
         try {
-            windowManager.addView(maskContainer, appsPanelParams)
-            writeLog("addView 成功")
-            maskContainer.post {
-                writeLog("maskContainer 尺寸: ${maskContainer.width}x${maskContainer.height}")
-                writeLog("contentContainer 尺寸: ${contentContainer.width}x${contentContainer.height}")
-            }
-        } catch (e: Exception) {
-            writeLog("addView 失败: ${e.message}")
-            e.printStackTrace()
-            Toast.makeText(context, "addView失败: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-        isAppsPanelShowing = true
-        Toast.makeText(context, "显示成功", Toast.LENGTH_SHORT).show()
-        writeLog("=== showAppsList 完成 ===")
+            val screenWidth = context.resources.displayMetrics.widthPixels
+            val screenHeight = context.resources.displayMetrics.heightPixels
+            val appsWidth = (screenWidth * 0.85).toInt()
+            val appsX = (screenWidth - appsWidth) / 2
+            val workbenchHeight = settings.height.dpToPx()
 
-    } catch (e: Exception) {
-        writeLog("错误: ${e.message}")
-        e.printStackTrace()
-        Toast.makeText(context, "错误: ${e.message}", Toast.LENGTH_LONG).show()
+            val rootContainer = FrameLayout(context).apply {
+                setBackgroundColor(Color.parseColor("#CC000000"))
+                setOnTouchListener { _, event ->
+                    if (event.action == MotionEvent.ACTION_DOWN) {
+                        hideAppsList()
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+
+            val contentContainer = FrameLayout(context).apply {
+                setBackgroundColor(Color.BLACK)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    outlineProvider = object : android.view.ViewOutlineProvider() {
+                        override fun getOutline(view: View, outline: android.graphics.Outline) {
+                            outline.setRoundRect(0, 0, view.width, view.height, 24.dpToPx().toFloat())
+                        }
+                    }
+                    clipToOutline = true
+                    elevation = 24f
+                }
+            }
+
+            val contentParams = FrameLayout.LayoutParams(
+                appsWidth,
+                screenHeight - workbenchHeight - 40.dpToPx()
+            ).apply {
+                gravity = Gravity.CENTER
+            }
+            contentContainer.layoutParams = contentParams
+
+            if (appListPanel == null) {
+                val loader = iconLoader ?: IconLoader(false, null)
+                appListPanel = AppListPanel(
+                    context = context,
+                    iconLoader = loader,
+                    coroutineScope = coroutineScope,
+                    onHidePanel = { hideAppsList() },
+                    onRefreshTiles = {},
+                    onShowSettings = {
+                        try {
+                            val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(intent)
+                            hideAppsList()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onShowFreezeDialog = {},
+                    onPinApp = {},
+                    onRefreshApps = {}
+                )
+            }
+
+            val view = appListPanel?.createView()
+            if (view != null) {
+                contentContainer.addView(view)
+                view.setOnTouchListener { _, _ -> false }
+                loadAppsForPanel()
+            }
+
+            rootContainer.addView(contentContainer)
+
+            val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            } else {
+                WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+            }
+
+            appsPanelParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                windowType,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.CENTER
+                x = 0
+                y = 0
+            }
+
+            appsPanelView = rootContainer
+            windowManager.addView(rootContainer, appsPanelParams)
+            isAppsPanelShowing = true
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(context, "无法打开应用列表", Toast.LENGTH_SHORT).show()
+        }
     }
-}
+
+    private fun loadAppsForPanel() {
+        try {
+            val pm = context.packageManager
+            val all = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            val list = ArrayList<App>()
+            for (info in all) {
+                if (info.packageName == context.packageName) continue
+                val activities = pm.queryIntentActivities(
+                    Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(info.packageName),
+                    PackageManager.GET_DISABLED_COMPONENTS
+                )
+                if (activities.isEmpty()) continue
+                list.add(App(info.loadLabel(pm).toString(), info.packageName, 0))
+            }
+            cachedApps.clear()
+            cachedApps.addAll(list)
+            appListPanel?.loadApps(cachedApps)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
 
     fun hideAppsList() {
         if (!isAppsPanelShowing) return
@@ -460,28 +450,12 @@ class WorkbenchOverlay(
         }
     }
 
-    // ========== 强制刷新图标 ==========
-    fun forceRefreshIcons() {
-        Log.d(TAG, "=== forceRefreshIcons() 被调用 ===")
-        refreshAppSlots()
-        if (isAppsPanelShowing && appListPanel != null) {
-            val apps = manager.getCachedApps()
-            appListPanel?.refresh(apps)
-            Log.d(TAG, "App list panel refreshed")
-        }
-        val apps = manager.getCachedApps()
-        for (app in apps) {
-            app.mPackage?.let { pkg ->
-                iconLoader?.getIconForPackage(context, pkg)
-            }
-        }
-        Log.d(TAG, "Icons preloaded")
-    }
-
     // ========== 工作台视图 ==========
     private fun createWorkbenchView(screenWidth: Int): FrameLayout {
+        // ========== 从设置读取高度 ==========
         val workbenchHeight = settings.height.dpToPx()
         barHeight = workbenchHeight
+        // ====================================
 
         val container = GestureContainer(context,
             onHomeGesture = { performHome() },

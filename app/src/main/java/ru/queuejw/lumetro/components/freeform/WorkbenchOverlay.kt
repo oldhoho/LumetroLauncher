@@ -5,110 +5,160 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.telephony.PhoneStateListener
-import android.telephony.TelephonyManager
+import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlinx.coroutines.*
+import kotlin.math.sqrt
+import kotlin.math.atan2
 import ru.queuejw.lumetro.components.core.icons.IconLoader
-import ru.queuejw.lumetro.components.core.sidebar.SidebarAccessibilityService
+import ru.queuejw.lumetro.components.core.sidebar.AppListPanel
 import ru.queuejw.lumetro.components.freeform.helper.FreeformHackHelper
 import ru.queuejw.lumetro.components.freeform.util.U
-import ru.queuejw.lumetro.components.freeze.FreezeManager
-import ru.queuejw.lumetro.components.freeze.ShizukuHelper
-import ru.queuejw.lumetro.utils.WorkbenchLogger
+import ru.queuejw.lumetro.model.App
+import java.io.File
+import java.lang.ref.WeakReference
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-class WorkbenchOverlay(private val service: AccessibilityService) {
+class WorkbenchOverlay(
+    private val service: AccessibilityService,
+    private val manager: WorkbenchManager
+) {
 
     private val context: Context = service.applicationContext
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private var overlayView: FrameLayout? = null
+    private val coroutineScope = manager.getCoroutineScope()
+    private val iconLoader: IconLoader? = manager.getIconLoader()
+    private val iconCache: MutableMap<String, Bitmap> = manager.getIconCache()
+    private val settings = manager.getSettings()
+    private val prefs = context.getSharedPreferences("workbench", Context.MODE_PRIVATE)
+
+    // ========== 性能日志 ==========
+    private val perfLogEnabled = false
+    
+    private fun perfLog(message: String) {
+        if (!perfLogEnabled) return
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.getDefault()).format(Date())
+        val logMessage = "[$timestamp] [WorkbenchOverlay] $message"
+        Log.d("WorkbenchOverlay_Perf", logMessage)
+        
+        try {
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "workbench_performance_log.txt")
+            file.appendText("$logMessage\n")
+        } catch (e: Exception) {
+            // 忽略
+        }
+    }
+
+    // ========== 使用 WeakReference 防止内存泄漏 ==========
+    private var overlayViewRef: WeakReference<FrameLayout>? = null
+    private var appsPanelViewRef: WeakReference<FrameLayout>? = null
+    private var pageIndicatorRef: WeakReference<LinearLayout>? = null
+    
+    // ========== 预创建的 AppListPanel ==========
+    private var preCreatedAppListPanel: AppListPanel? = null
+    private var preCreatedView: View? = null
+    private var isAppListReady = false
+    private var preCreateJob: Job? = null
+    
+    // ========== 缓存的应用列表哈希值 ==========
+    private var cachedAppsHash: Int = 0
+    
+    private var appsPanelParams: WindowManager.LayoutParams? = null
+    private var workbenchParams: WindowManager.LayoutParams? = null
+    
     private var isShowing = false
     private var isScreenOff = false
     private var barHeight = 0
     private val appContainer = LinearLayout(context)
-    private var scrollView: HorizontalScrollView? = null
     private var isContainerInitialized = false
 
+    // ========== 应用列表面板 ==========
+    private var isAppsPanelShowing = false
+    private val cachedApps = mutableListOf<App>()
+
+    // ========== 数据 ==========
     private val MAX_SLOTS = 7
     private val MAX_APPS = 50
     private val appSlots = mutableListOf<Pair<String, String>>()
+    private var currentPage = 0
+    private val ITEMS_PER_PAGE = 6
     private val blacklist = mutableSetOf<String>()
     private val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 
+    // ========== 模式 ==========
     private enum class Mode {
         NORMAL, ADD, REMOVE
     }
+    
+    private val TAG = "WorkbenchOverlay"
     private var currentMode = Mode.NORMAL
     private var foregroundPackage = ""
 
-    private val prefs by lazy { U.getSharedPreferences(context) }
-    private val iconLoader get() = SidebarAccessibilityService.sidebarManager?.iconLoader
-
-    private var gestureView: View? = null
-    private var gestureParams: WindowManager.LayoutParams? = null
-    private var stripDownX = 0f
-    private var stripDownY = 0f
-    private var stripIsDragging = false
-    private val stripTouchSlop = ViewConfiguration.get(context).scaledTouchSlop
-
-    private val coroutineScope = CoroutineScope(Dispatchers.Main + Job())
+    // ========== 长按冻结 ==========
     private var longPressRunnable: Runnable? = null
     private var longPressPackage = ""
     private var longPressName = ""
     private var longPressDownY = 0f
     private var isLongPressTriggered = false
+    private val handler = Handler(Looper.getMainLooper())
 
-    private var phoneStateListener: PhoneStateListener? = null
-    private var telephonyManager: TelephonyManager? = null
-
+    // ========== 广播接收器 ==========
     private val screenStateReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     isScreenOff = true
-                    overlayView?.visibility = View.GONE
-                    gestureView?.visibility = View.GONE
+                    // ========== 锁屏时完全移除工作台 ==========
+                    hideWorkbenchOnScreenOff()
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     isScreenOff = false
-                    updateWorkbenchVisibility()
-                }
-                Intent.ACTION_CONFIGURATION_CHANGED -> {
-                    updateWorkbenchVisibility()
+                    // ========== 解锁后立即恢复工作台 ==========
+                    restoreWorkbenchOnScreenOn()
                 }
             }
         }
     }
 
+    // ========== 初始化 ==========
     init {
+        perfLog("WorkbenchOverlay init START")
+        val initStart = System.currentTimeMillis()
+        
         val filter = android.content.IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
-            addAction(Intent.ACTION_CONFIGURATION_CHANGED)
         }
-        context.registerReceiver(screenStateReceiver, filter)
-
-        WorkbenchLogger.init(context)
-        WorkbenchLogger.log("Workbench", "=== Workbench initialized ===")
+        try {
+            context.registerReceiver(screenStateReceiver, filter)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register receiver", e)
+        }
 
         loadBlacklist()
         initSlots()
@@ -116,79 +166,138 @@ class WorkbenchOverlay(private val service: AccessibilityService) {
 
         try {
             iconLoader?.getIconForPackage(context, context.packageName)
-        } catch (e: Exception) { }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load icon", e)
+        }
 
-        setupPhoneStateListener()
+        perfLog("WorkbenchOverlay init END: ${System.currentTimeMillis() - initStart}ms")
+        
+        preCreateAppListPanel()
     }
 
-    private fun setupPhoneStateListener() {
+    // ========== 锁屏时完全移除工作台 ==========
+    private fun hideWorkbenchOnScreenOff() {
         try {
-            telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-            phoneStateListener = object : PhoneStateListener() {
-                override fun onCallStateChanged(state: Int, phoneNumber: String?) {
-                    when (state) {
-                        TelephonyManager.CALL_STATE_IDLE -> {
-                            WorkbenchLogger.log("Workbench", "Phone call ended, restoring workbench")
-                            if (!isScreenOff && !isLandscapeOrientation()) {
-                                if (overlayView == null) {
-                                    show()
-                                } else {
-                                    overlayView?.visibility = View.VISIBLE
-                                    isShowing = true
-                                    refreshAppContainer()
-                                }
-                            }
-                        }
-                        TelephonyManager.CALL_STATE_OFFHOOK -> {
-                            WorkbenchLogger.log("Workbench", "Phone call started")
-                        }
-                        TelephonyManager.CALL_STATE_RINGING -> {
-                            WorkbenchLogger.log("Workbench", "Phone ringing")
-                        }
-                    }
-                }
+            val view = overlayViewRef?.get()
+            if (view != null && isShowing) {
+                windowManager.removeView(view)
+                perfLog("hideWorkbenchOnScreenOff: workbench removed")
             }
-            // 所有版本统一使用 listen 方式
-@Suppress("DEPRECATION")
-telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STATE)
-            WorkbenchLogger.log("Workbench", "Phone state listener registered")
+            // 标记为未显示，但保留视图引用以便快速恢复
+            isShowing = false
         } catch (e: Exception) {
-            WorkbenchLogger.logError("Workbench", "Failed to register phone state listener", e)
+            Log.e(TAG, "hideWorkbenchOnScreenOff failed", e)
         }
     }
 
-    private fun isLandscapeOrientation(): Boolean {
-        val orientation = context.resources.configuration.orientation
-        return orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-    }
-
-    private fun updateWorkbenchVisibility() {
-        if (isScreenOff) return
-
-        if (isLandscapeOrientation()) {
-            overlayView?.visibility = View.GONE
-            gestureView?.visibility = View.GONE
-        } else {
-            if (overlayView != null) {
-                overlayView?.visibility = View.VISIBLE
-                gestureView?.visibility = View.VISIBLE
-                refreshAppContainer()
+    // ========== 解锁后立即恢复工作台 ==========
+    private fun restoreWorkbenchOnScreenOn() {
+        try {
+            val view = overlayViewRef?.get()
+            val params = workbenchParams
+            
+            if (view != null && params != null) {
+                // 视图已存在，直接重新添加
+                windowManager.addView(view, params)
+                isShowing = true
+                perfLog("restoreWorkbenchOnScreenOn: workbench restored")
             } else {
+                // 视图不存在，重新创建
+                perfLog("restoreWorkbenchOnScreenOn: view is null, recreating")
                 show()
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "restoreWorkbenchOnScreenOn failed", e)
+            // 降级方案：重新创建
+            show()
         }
     }
 
+    // ========== 预创建 AppListPanel ==========
+    private fun preCreateAppListPanel() {
+        perfLog("preCreateAppListPanel START")
+        val startTime = System.currentTimeMillis()
+        
+        preCreateJob?.cancel()
+        preCreateJob = coroutineScope.launch(Dispatchers.IO) {
+            try {
+                val apps = manager.getCachedApps()
+                cachedApps.clear()
+                cachedApps.addAll(apps)
+                cachedAppsHash = apps.hashCode()
+                perfLog("preCreateAppListPanel: got ${apps.size} apps in ${System.currentTimeMillis() - startTime}ms")
+                
+                val createStart = System.currentTimeMillis()
+                val loader = iconLoader ?: IconLoader(false, null)
+                val panel = AppListPanel(
+                    context = context,
+                    iconLoader = loader,
+                    coroutineScope = coroutineScope,
+                    onHidePanel = { hideAppsList() },
+                    onRefreshTiles = {},
+                    onShowSettings = {
+                        try {
+                            val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(intent)
+                            hideAppsList()
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onShowFreezeDialog = {},
+                    onPinApp = {},
+                    onRefreshApps = {}
+                )
+                
+                val view = panel.createView()
+                perfLog("preCreateAppListPanel: created view in ${System.currentTimeMillis() - createStart}ms")
+                
+                val loadStart = System.currentTimeMillis()
+                panel.loadApps(apps)
+                perfLog("preCreateAppListPanel: loaded data in ${System.currentTimeMillis() - loadStart}ms")
+                
+                withContext(Dispatchers.Main) {
+                    preCreatedAppListPanel = panel
+                    preCreatedView = view
+                    isAppListReady = true
+                    val elapsed = System.currentTimeMillis() - startTime
+                    perfLog("preCreateAppListPanel END: total ${elapsed}ms")
+                    Log.d(TAG, "AppListPanel pre-created in ${elapsed}ms")
+                }
+            } catch (e: Exception) {
+                perfLog("preCreateAppListPanel FAILED: ${e.message}")
+                Log.e(TAG, "Pre-create AppListPanel failed", e)
+            }
+        }
+    }
+
+    private suspend fun getAppsWithCache(): List<App> {
+        val apps = manager.getCachedApps()
+        val newHash = apps.hashCode()
+        
+        if (cachedAppsHash != newHash) {
+            perfLog("getAppsWithCache: apps changed, updating cache")
+            cachedApps.clear()
+            cachedApps.addAll(apps)
+            cachedAppsHash = newHash
+        }
+        
+        return if (cachedApps.isNotEmpty()) cachedApps else apps
+    }
+
+    // ========== 黑名单管理 ==========
     private fun loadBlacklist() {
-        val saved = prefs.getStringSet("blacklist", emptySet())
+        val saved = manager.getBlacklist()
         blacklist.clear()
-        blacklist.addAll(saved ?: emptySet())
+        blacklist.addAll(saved)
     }
 
     private fun saveBlacklist() {
-        prefs.edit().putStringSet("blacklist", blacklist).apply()
+        manager.setBlacklist(blacklist)
     }
 
+    // ========== 应用列表 ==========
     private fun initSlots() {
         appSlots.clear()
     }
@@ -197,21 +306,19 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
         appContainer.removeAllViews()
         appContainer.orientation = LinearLayout.HORIZONTAL
         appContainer.gravity = Gravity.CENTER
-        refreshAppContainer()
+        appContainer.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.MATCH_PARENT
+        )
+        refreshAppSlots()
         isContainerInitialized = true
     }
 
     fun updateForegroundApp(packageName: String) {
-        if (packageName == context.packageName) {
-            foregroundPackage = ""
-            refreshAppContainer()
-            return
-        }
-
+        if (packageName == context.packageName) return
         if (blacklist.contains(packageName)) return
+        if (manager.isAppFrozen(packageName)) return
         if (currentMode != Mode.NORMAL) return
-
-        if (isAppFrozen(packageName)) return
 
         foregroundPackage = packageName
 
@@ -227,26 +334,37 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 appSlots.removeAt(appSlots.size - 1)
             }
 
-            refreshAppContainer()
+            refreshAppSlots()
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "updateForegroundApp failed", e)
         }
     }
 
+    // ========== 显示/隐藏 ==========
     fun show() {
-        if (isLandscapeOrientation()) return
-        if (isShowing) {
-            overlayView?.visibility = View.VISIBLE
+        if (isShowing) return
+        if (overlayViewRef?.get() != null) {
+            // 视图已存在但未显示，重新添加
+            val view = overlayViewRef?.get()
+            val params = workbenchParams
+            if (view != null && params != null) {
+                try {
+                    windowManager.addView(view, params)
+                    isShowing = true
+                    perfLog("show: re-added existing view")
+                    return
+                } catch (e: Exception) {
+                    Log.e(TAG, "show: re-add failed", e)
+                    overlayViewRef = null
+                }
+            }
+        }
+        if (isScreenOff) {
+            prepareViews()
             return
         }
-        if (overlayView != null) {
-            overlayView?.visibility = View.VISIBLE
-            isShowing = true
-            scrollToStart()
-            return
-        }
-        if (isScreenOff) return
 
+        currentPage = 0
         activateFreeformMode()
 
         val displayMetrics = context.resources.displayMetrics
@@ -255,7 +373,7 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
         barHeight = navBarHeight
 
         val container = createWorkbenchView(screenWidth)
-        overlayView = container
+        overlayViewRef = WeakReference(container)
 
         val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -263,9 +381,10 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
             WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
         }
 
-        val params = WindowManager.LayoutParams(
+        val workbenchHeight = settings.height.dpToPx()
+        workbenchParams = WindowManager.LayoutParams(
             screenWidth,
-            barHeight,
+            workbenchHeight,
             windowType,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
@@ -280,200 +399,483 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
         }
 
         try {
-            windowManager.addView(container, params)
+            windowManager.addView(container, workbenchParams)
             isShowing = true
-            scrollToStart()
-            WorkbenchLogger.log("Workbench", "show() - success")
         } catch (e: Exception) {
-            WorkbenchLogger.logError("Workbench", "show() - failed", e)
-            e.printStackTrace()
+            Log.e(TAG, "show failed", e)
         }
 
-        createGestureStrip()
+        updatePageIndicator()
     }
 
-    private fun getNavBarHeight(): Int {
-        var result = 0
-        val resourceId = context.resources.getIdentifier("navigation_bar_height", "dimen", "android")
-        if (resourceId > 0) {
-            result = context.resources.getDimensionPixelSize(resourceId)
+    fun hide() {
+        if (isAppsPanelShowing) {
+            preCreatedAppListPanel?.clearSearch()
+            hideAppsList()
         }
-        if (result == 0) {
-            val statusBarHeight = getStatusBarHeight()
-            result = (statusBarHeight * 1.5f).toInt()
-        }
-        if (result == 0) {
-            result = (120 * context.resources.displayMetrics.density).toInt()
-        }
-        return result
-    }
-
-    private fun getStatusBarHeight(): Int {
-        var result = 0
-        val resourceId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
-        if (resourceId > 0) {
-            result = context.resources.getDimensionPixelSize(resourceId)
-        }
-        if (result == 0) {
-            result = (80 * context.resources.displayMetrics.density).toInt()
-        }
-        return result
-    }
-
-    private fun createGestureStrip() {
-        destroyGestureStrip()
-
-        val stripWidth = prefs.getInt("gesture_strip_width", 6)
-        val stripHeight = prefs.getInt("gesture_strip_height", 0)
-        val stripOffset = prefs.getInt("gesture_strip_offset", 0)
-        val stripAlpha = prefs.getFloat("gesture_strip_alpha", 0.3f)
-
-        val h = if (stripHeight > 0) stripHeight.dpToPx() else WindowManager.LayoutParams.MATCH_PARENT
-        val offsetY = stripOffset.dpToPx()
-
-        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        } else {
-            WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
-        }
-
-        gestureParams = WindowManager.LayoutParams(
-            stripWidth.dpToPx(),
-            h,
-            windowType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.LEFT or Gravity.TOP
-            x = 0
-            y = offsetY
-        }
-
-        gestureView = View(context).apply {
-            setBackgroundColor(((stripAlpha * 255).toInt() shl 24) or 0xFFFFFF)
-            setOnTouchListener { _, event ->
-                handleGestureStrip(event)
-            }
-            isFocusable = false
-            isClickable = false
-            isLongClickable = false
-            setWillNotDraw(true)
-        }
-
-        try {
-            windowManager.addView(gestureView, gestureParams)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun destroyGestureStrip() {
-        gestureView?.let {
+        currentMode = Mode.NORMAL
+        currentPage = 0
+        
+        overlayViewRef?.get()?.let {
             try {
                 windowManager.removeView(it)
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(TAG, "hide failed", e)
             }
         }
-        gestureView = null
-        gestureParams = null
+        overlayViewRef = null
+        workbenchParams = null
+        isShowing = false
     }
 
-    private fun handleGestureStrip(e: MotionEvent): Boolean {
-    when (e.action) {
-        MotionEvent.ACTION_DOWN -> {
-            stripDownX = e.rawX
-            stripDownY = e.rawY
-            stripIsDragging = false
-            return false  // 不拦截
-        }
-        MotionEvent.ACTION_MOVE -> {
-            val dx = e.rawX - stripDownX
-            val dy = e.rawY - stripDownY
-            if (!stripIsDragging && (Math.abs(dx) > stripTouchSlop || Math.abs(dy) > stripTouchSlop)) {
-                stripIsDragging = true
+    fun toggle() {
+        if (isShowing) hide() else show()
+    }
+
+    fun isShowing(): Boolean = isShowing
+    
+    fun forceRefreshIcons() {
+    perfLog("forceRefreshIcons")
+    
+    // ========== 刷新应用槽位 ==========
+    refreshAppSlots()
+    
+    // ========== 如果搜索面板打开，刷新面板数据 ==========
+    if (isAppsPanelShowing) {
+        val apps = manager.getCachedApps()
+        cachedApps.clear()
+        cachedApps.addAll(apps)
+        cachedAppsHash = apps.hashCode()
+        preCreatedAppListPanel?.refresh(apps)
+        Log.d(TAG, "App list panel refreshed with ${apps.size} apps")
+    }
+    
+    // ========== 预加载图标 ==========
+    val apps = manager.getCachedApps()
+    var count = 0
+    for (app in apps) {
+        app.mPackage?.let { pkg ->
+            val icon = iconLoader?.getIconForPackage(context, pkg)
+            if (icon != null) {
+                count++
             }
-            return false  // 不拦截
-        }
-        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-            if (stripIsDragging) {
-                val dx = e.rawX - stripDownX
-                if (dx > 60) {
-                    performBack()
-                    stripIsDragging = false
-                    return true  // 只有快速右滑才拦截
-                }
-            }
-            stripIsDragging = false
-            return false  // 不拦截
         }
     }
-    return false
+    Log.d(TAG, "Preloaded $count icons")
 }
 
-    private fun performBack() {
-        try {
-            SidebarAccessibilityService.getInstance()?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-        } catch (e: Exception) { }
+// WorkbenchOverlay.kt - 添加方法
+
+// ========== 从槽位中移除指定应用 ==========
+fun removeAppFromSlots(packageName: String) {
+    perfLog("removeAppFromSlots: $packageName")
+    // 从 appSlots 中移除
+    appSlots.removeAll { it.first == packageName }
+    // 刷新显示
+    refreshAppSlots()
+}
+
+    // ========== 应用列表面板 ==========
+    fun showAppsList() {
+        perfLog("showAppsList START")
+        
+        if (isAppsPanelShowing) {
+            hideAppsList()
+            return
+        }
+
+        if (cachedApps.isEmpty()) {
+            perfLog("showAppsList: cachedApps is empty, loading from manager")
+            coroutineScope.launch(Dispatchers.IO) {
+                val apps = manager.getCachedApps()
+                cachedApps.clear()
+                cachedApps.addAll(apps)
+                cachedAppsHash = apps.hashCode()
+                withContext(Dispatchers.Main) {
+                    showAppsList()
+                }
+            }
+            return
+        }
+
+        if (isAppListReady && preCreatedView != null && preCreatedAppListPanel != null) {
+            showPreCreatedAppList()
+            return
+        }
+
+        perfLog("showAppsList: pre-created not ready, using fallback")
+        showAppsListFallback()
     }
 
-    private class SwipeFrameLayout(context: Context, private val onSwipeUp: () -> Unit) : FrameLayout(context) {
-        private var downY = 0f
-        private var isDragging = false
-        private val slop = ViewConfiguration.get(context).scaledTouchSlop
-        private val screenWidth = context.resources.displayMetrics.widthPixels
-        private val centerStart = screenWidth / 3
-        private val centerEnd = screenWidth * 2 / 3
-
-        override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
-            if (ev == null) return super.dispatchTouchEvent(ev)
-
-            val x = ev.rawX
-            if (x < centerStart || x > centerEnd) {
-                return super.dispatchTouchEvent(ev)
+    // ========== 获取窗口类型 ==========
+    private fun getOverlayWindowType(): Int {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } catch (e: Exception) {
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             }
-
-            when (ev.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    downY = ev.rawY
-                    isDragging = false
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dy = ev.rawY - downY
-                    if (!isDragging && Math.abs(dy) > slop) {
-                        isDragging = true
-                    }
-                }
-                MotionEvent.ACTION_UP -> {
-                    if (isDragging) {
-                        val dy = ev.rawY - downY
-                        if (dy < -60) {
-                            onSwipeUp()
-                            isDragging = false
-                            return true
-                        }
-                        isDragging = false
-                    }
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    isDragging = false
-                }
-            }
-            return super.dispatchTouchEvent(ev)
+        } else {
+            WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
         }
     }
 
-    private fun createWorkbenchView(screenWidth: Int): FrameLayout {
-        val navBarHeight = getNavBarHeight()
-        barHeight = navBarHeight
+    // ========== 显示预创建的应用列表 ==========
+    private fun showPreCreatedAppList() {
+        val startTime = System.currentTimeMillis()
+        perfLog("showPreCreatedAppList START")
+        
+        try {
+            val screenWidth = context.resources.displayMetrics.widthPixels
+            val screenHeight = context.resources.displayMetrics.heightPixels
+            
+            val widthRatio = settings.appListWidthRatio
+            val heightRatio = settings.appListHeightRatio
+            val verticalOffset = settings.appListVerticalOffset.dpToPx()
+            val cornerRadius = settings.appListCornerRadius.dpToPx().toFloat()
+            val dimAlpha = settings.appListDimAlpha
+            
+            val appsWidth = (screenWidth * widthRatio).toInt()
+            val workbenchHeight = settings.height.dpToPx()
+            val availableHeight = screenHeight - workbenchHeight
+            val appsHeight = (availableHeight * heightRatio).toInt()
+            val topMargin = ((availableHeight - appsHeight) / 2) + verticalOffset
 
-        val container = SwipeFrameLayout(context) {
-            performHome()
-            scrollToStart()
-        }.apply {
+            // ========== 根容器：全屏覆盖 ==========
+            val rootContainer = FrameLayout(context).apply {
+                val alphaInt = (dimAlpha * 255).toInt()
+                setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                setOnTouchListener { _, event ->
+                    if (event.action == MotionEvent.ACTION_DOWN) {
+                        hideAppsList()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                
+                isFocusable = true
+                isFocusableInTouchMode = true
+                requestFocus()
+                setOnKeyListener { _, keyCode, event ->
+                    if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                        perfLog("Back key pressed, hiding app list")
+                        hideAppsList()
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+
+            // ========== 内容容器 ==========
+            val contentContainer = FrameLayout(context).apply {
+                setBackgroundColor(Color.BLACK)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    outlineProvider = object : android.view.ViewOutlineProvider() {
+                        override fun getOutline(view: View, outline: android.graphics.Outline) {
+                            outline.setRoundRect(0, 0, view.width, view.height, cornerRadius)
+                        }
+                    }
+                    clipToOutline = true
+                    elevation = 24f
+                }
+            }
+
+            val contentParams = FrameLayout.LayoutParams(appsWidth, appsHeight)
+            contentParams.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            contentParams.topMargin = topMargin
+            contentContainer.layoutParams = contentParams
+
+            val view = preCreatedView
+            if (view != null) {
+                (view.parent as? ViewGroup)?.removeView(view)
+                contentContainer.addView(view)
+                
+                val refreshStart = System.currentTimeMillis()
+                val currentApps = if (cachedApps.isNotEmpty()) cachedApps else runBlocking { manager.getCachedApps() }
+                
+                if (cachedApps.isEmpty() && currentApps.isNotEmpty()) {
+                    cachedApps.clear()
+                    cachedApps.addAll(currentApps)
+                    cachedAppsHash = currentApps.hashCode()
+                }
+                
+                preCreatedAppListPanel?.refresh(currentApps)
+                perfLog("showPreCreatedAppList: refreshed with ${currentApps.size} apps")
+            }
+
+            rootContainer.addView(contentContainer)
+
+            val windowType = getOverlayWindowType()
+            perfLog("showPreCreatedAppList: using windowType=$windowType")
+
+            appsPanelParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                windowType,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                        WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 0
+                y = 0
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    try {
+                        val field = WindowManager.LayoutParams::class.java.getField("layoutInDisplayCutoutMode")
+                        val mode = WindowManager.LayoutParams::class.java.getField("LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES")
+                        field.set(this, mode.getInt(null))
+                    } catch (e: Exception) {
+                        // 忽略
+                    }
+                }
+            }
+
+            appsPanelViewRef = WeakReference(rootContainer)
+            val addStart = System.currentTimeMillis()
+            windowManager.addView(rootContainer, appsPanelParams)
+            perfLog("showPreCreatedAppList: addView in ${System.currentTimeMillis() - addStart}ms")
+            isAppsPanelShowing = true
+            
+            rootContainer.post {
+                rootContainer.requestFocus()
+            }
+            
+            val elapsed = System.currentTimeMillis() - startTime
+            perfLog("showPreCreatedAppList END: ${elapsed}ms")
+            Log.d(TAG, "Pre-created AppList shown in ${elapsed}ms")
+
+        } catch (e: Exception) {
+            perfLog("showPreCreatedAppList FAILED: ${e.message}")
+            Log.e(TAG, "showPreCreatedAppList failed", e)
+            showAppsListFallback()
+        }
+    }
+
+    // ========== 降级方案：实时创建应用列表 ==========
+    private fun showAppsListFallback() {
+        val startTime = System.currentTimeMillis()
+        perfLog("showAppsListFallback START")
+        
+        try {
+            if (cachedApps.isEmpty()) {
+                perfLog("showAppsListFallback: cachedApps is empty, loading...")
+                val apps = runBlocking { manager.getCachedApps() }
+                cachedApps.clear()
+                cachedApps.addAll(apps)
+                cachedAppsHash = apps.hashCode()
+                if (apps.isEmpty()) {
+                    perfLog("showAppsListFallback: no apps loaded!")
+                    Toast.makeText(context, "无法加载应用列表", Toast.LENGTH_SHORT).show()
+                    return
+                }
+            }
+            
+            val screenWidth = context.resources.displayMetrics.widthPixels
+            val screenHeight = context.resources.displayMetrics.heightPixels
+            
+            val widthRatio = settings.appListWidthRatio
+            val heightRatio = settings.appListHeightRatio
+            val verticalOffset = settings.appListVerticalOffset.dpToPx()
+            val cornerRadius = settings.appListCornerRadius.dpToPx().toFloat()
+            val dimAlpha = settings.appListDimAlpha
+            
+            val appsWidth = (screenWidth * widthRatio).toInt()
+            val workbenchHeight = settings.height.dpToPx()
+            val availableHeight = screenHeight - workbenchHeight
+            val appsHeight = (availableHeight * heightRatio).toInt()
+            val topMargin = ((availableHeight - appsHeight) / 2) + verticalOffset
+
+            val rootContainer = FrameLayout(context).apply {
+                val alphaInt = (dimAlpha * 255).toInt()
+                setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                setOnTouchListener { _, event ->
+                    if (event.action == MotionEvent.ACTION_DOWN) {
+                        hideAppsList()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                
+                isFocusable = true
+                isFocusableInTouchMode = true
+                requestFocus()
+                setOnKeyListener { _, keyCode, event ->
+                    if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                        perfLog("Back key pressed, hiding app list")
+                        hideAppsList()
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+
+            val contentContainer = FrameLayout(context).apply {
+                setBackgroundColor(Color.BLACK)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    outlineProvider = object : android.view.ViewOutlineProvider() {
+                        override fun getOutline(view: View, outline: android.graphics.Outline) {
+                            outline.setRoundRect(0, 0, view.width, view.height, cornerRadius)
+                        }
+                    }
+                    clipToOutline = true
+                    elevation = 24f
+                }
+            }
+
+            val contentParams = FrameLayout.LayoutParams(appsWidth, appsHeight)
+            contentParams.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            contentParams.topMargin = topMargin
+            contentContainer.layoutParams = contentParams
+
+            val createStart = System.currentTimeMillis()
+            val loader = iconLoader ?: IconLoader(false, null)
+            val panel = AppListPanel(
+                context = context,
+                iconLoader = loader,
+                coroutineScope = coroutineScope,
+                onHidePanel = { hideAppsList() },
+                onRefreshTiles = {},
+                onShowSettings = {
+                    try {
+                        val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                        hideAppsList()
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onShowFreezeDialog = {},
+                onPinApp = {},
+                onRefreshApps = {}
+            )
+            preCreatedAppListPanel = panel
+
+            val view = panel.createView()
+            preCreatedView = view
+            perfLog("showAppsListFallback: created view in ${System.currentTimeMillis() - createStart}ms")
+            
+            contentContainer.addView(view)
+            view.setOnTouchListener { _, _ -> false }
+            
+            val loadStart = System.currentTimeMillis()
+            panel.loadApps(cachedApps)
+            perfLog("showAppsListFallback: loaded ${cachedApps.size} apps in ${System.currentTimeMillis() - loadStart}ms")
+
+            rootContainer.addView(contentContainer)
+
+            val windowType = getOverlayWindowType()
+
+            appsPanelParams = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                windowType,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                        WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                x = 0
+                y = 0
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    try {
+                        val field = WindowManager.LayoutParams::class.java.getField("layoutInDisplayCutoutMode")
+                        val mode = WindowManager.LayoutParams::class.java.getField("LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES")
+                        field.set(this, mode.getInt(null))
+                    } catch (e: Exception) {
+                        // 忽略
+                    }
+                }
+            }
+
+            appsPanelViewRef = WeakReference(rootContainer)
+            windowManager.addView(rootContainer, appsPanelParams)
+            isAppsPanelShowing = true
+            isAppListReady = true
+            
+            rootContainer.post {
+                rootContainer.requestFocus()
+            }
+
+            val elapsed = System.currentTimeMillis() - startTime
+            perfLog("showAppsListFallback END: ${elapsed}ms")
+            Log.d(TAG, "Fallback AppList shown in ${elapsed}ms")
+
+        } catch (e: Exception) {
+            perfLog("showAppsListFallback FAILED: ${e.message}")
+            Log.e(TAG, "showAppsListFallback failed", e)
+            Toast.makeText(context, "无法打开应用列表", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun hideAppsList() {
+        perfLog("hideAppsList")
+        if (!isAppsPanelShowing) return
+        preCreatedAppListPanel?.clearSearch()
+        try {
+            appsPanelViewRef?.get()?.let {
+                windowManager.removeView(it)
+                (it as? ViewGroup)?.removeAllViews()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "hideAppsList failed", e)
+        }
+        appsPanelViewRef = null
+        appsPanelParams = null
+        isAppsPanelShowing = false
+    }
+
+    fun toggleAppsList() {
+        if (isAppsPanelShowing) {
+            hideAppsList()
+        } else {
+            showAppsList()
+        }
+    }
+
+    // ========== 预准备视图 ==========
+    private fun prepareViews() {
+        if (overlayViewRef?.get() == null) {
+            val displayMetrics = context.resources.displayMetrics
+            val screenWidth = displayMetrics.widthPixels
+            val container = createWorkbenchView(screenWidth)
+            overlayViewRef = WeakReference(container)
+            perfLog("prepareViews: views pre-created")
+        }
+    }
+
+    // ========== 工作台视图 ==========
+    private fun createWorkbenchView(screenWidth: Int): FrameLayout {
+        val workbenchHeight = settings.height.dpToPx()
+        barHeight = workbenchHeight
+
+        val container = GestureContainer(context,
+            onHomeGesture = { performHome() },
+            onPrevPage = { previousPage() },
+            onNextPage = { nextPage() },
+            onRecentGesture = { performRecent() },
+            onOpenSearch = { showAppsList() }
+        ).apply {
             setBackgroundColor(Color.parseColor("#FF1A1A1A"))
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 outlineProvider = android.view.ViewOutlineProvider.BACKGROUND
@@ -497,18 +899,17 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
             setPadding(0, 0, 0, 0)
             layoutParams = FrameLayout.LayoutParams(
                 screenWidth,
-                barHeight
+                workbenchHeight
             )
         }
 
-        scrollView = HorizontalScrollView(context).apply {
+        val fixedContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.MATCH_PARENT
             )
-            isHorizontalScrollBarEnabled = false
-            overScrollMode = View.OVER_SCROLL_NEVER
-            setPadding(0, 0, 0, 0)
         }
 
         if (!isContainerInitialized) {
@@ -517,53 +918,242 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
         appContainer.parent?.let { (it as? ViewGroup)?.removeView(appContainer) }
 
         appContainer.gravity = Gravity.CENTER
-
-        scrollView?.addView(appContainer)
-        topBar.addView(scrollView)
+        fixedContainer.addView(appContainer)
+        topBar.addView(fixedContainer)
         container.addView(topBar)
-
-        container.setOnClickListener {
-            scrollToStart()
-        }
 
         return container
     }
 
-    private fun performHome() {
-        try {
-            SidebarAccessibilityService.getInstance()?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-        } catch (e: Exception) {
-            try {
-                val homeIntent = Intent(Intent.ACTION_MAIN)
-                homeIntent.addCategory(Intent.CATEGORY_HOME)
-                homeIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                context.startActivity(homeIntent)
-            } catch (e2: Exception) { }
+    // ========== 手势容器 ==========
+    private class GestureContainer(
+        context: Context,
+        private val onHomeGesture: () -> Unit,
+        private val onPrevPage: () -> Unit,
+        private val onNextPage: () -> Unit,
+        private val onRecentGesture: () -> Unit,
+        private val onOpenSearch: () -> Unit
+    ) : FrameLayout(context) {
+
+        private var touchStartX = 0f
+        private var touchStartY = 0f
+        private var touchStartRawX = 0f
+        private var touchStartRawY = 0f
+        private var gesturePhase = 0
+        private var lastMoveY = 0f
+        private var gestureCompleted = false
+        private var isIntercepting = false
+        private var isTimeout = false
+
+        private val handler = Handler(Looper.getMainLooper())
+        private var timeoutRunnable: Runnable? = null
+
+        private val SWIPE_THRESHOLD = 25f
+        private val TIMEOUT_MS = 500L
+        private val ANGLE_MIN = 10.0
+        private val ANGLE_MAX = 90.0
+        private val DISTANCE_MIN = 15f
+
+        private val screenWidth = context.resources.displayMetrics.widthPixels.toFloat()
+        private val screenHeight = context.resources.displayMetrics.heightPixels.toFloat()
+
+        override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchStartX = event.x
+                    touchStartY = event.y
+                    touchStartRawX = event.rawX
+                    touchStartRawY = event.rawY
+                    lastMoveY = event.y
+                    gesturePhase = 0
+                    gestureCompleted = false
+                    isIntercepting = false
+                    isTimeout = false
+
+                    timeoutRunnable = Runnable {
+                        if (!gestureCompleted) {
+                            isTimeout = true
+                            gestureCompleted = true
+                            isIntercepting = false
+                            parent?.requestDisallowInterceptTouchEvent(false)
+                        }
+                    }
+                    handler.postDelayed(timeoutRunnable!!, TIMEOUT_MS)
+
+                    return false
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    if (gestureCompleted || isTimeout) return false
+
+                    val dx = event.x - touchStartX
+                    val dy = event.y - touchStartY
+                    val distance = sqrt(dx * dx + dy * dy)
+
+                    if (isIntercepting) return true
+
+                    if (distance > SWIPE_THRESHOLD) {
+                        val inMainArea = isInMainArea(touchStartX)
+                        val inLeftBottom = isInLeftBottomRegion(touchStartRawX, touchStartRawY)
+
+                        if (inMainArea || inLeftBottom) {
+                            isIntercepting = true
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                            return true
+                        } else {
+                            gestureCompleted = true
+                            gesturePhase = 0
+                            timeoutRunnable?.let { handler.removeCallbacks(it) }
+                            return false
+                        }
+                    }
+                    return false
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!gestureCompleted) {
+                        timeoutRunnable?.let { handler.removeCallbacks(it) }
+                        resetState()
+                    }
+                    return false
+                }
+            }
+            return super.onInterceptTouchEvent(event)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.action) {
+                MotionEvent.ACTION_MOVE -> {
+                    if (gestureCompleted || isTimeout) return true
+
+                    val dx = event.x - touchStartX
+                    val dy = event.y - touchStartY
+                    val distance = sqrt(dx * dx + dy * dy)
+
+                    if (distance < 10) return true
+
+                    if (isInMainArea(touchStartX)) {
+                        if (gesturePhase == 0 && dy < -SWIPE_THRESHOLD) {
+                            gesturePhase = 1
+                            lastMoveY = event.y
+                        }
+                        if (gesturePhase == 1 && event.y - lastMoveY > SWIPE_THRESHOLD) {
+                            gesturePhase = 2
+                        }
+                        if (gesturePhase == 0 && dx > SWIPE_THRESHOLD) {
+                            gesturePhase = 4
+                        }
+                        if (gesturePhase == 0 && dx < -SWIPE_THRESHOLD) {
+                            gesturePhase = 5
+                        }
+                    }
+
+                    if (isInLeftBottomRegion(touchStartRawX, touchStartRawY)) {
+                        val angle = kotlin.math.abs(Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())))
+                        if (distance > DISTANCE_MIN && angle in ANGLE_MIN..ANGLE_MAX) {
+                            if (gesturePhase != 3) {
+                                gesturePhase = 3
+                            }
+                        }
+                    }
+
+                    return true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    timeoutRunnable?.let { handler.removeCallbacks(it) }
+
+                    if (isTimeout) {
+                        resetState()
+                        return true
+                    }
+
+                    if (!gestureCompleted) {
+                        when (gesturePhase) {
+                            1 -> {
+                                gestureCompleted = true
+                                onOpenSearch()
+                                resetState()
+                                return true
+                            }
+                            2 -> {
+                                gestureCompleted = true
+                                onHomeGesture()
+                                resetState()
+                                return true
+                            }
+                            3 -> {
+                                gestureCompleted = true
+                                onRecentGesture()
+                                resetState()
+                                return true
+                            }
+                            4 -> {
+                                gestureCompleted = true
+                                onPrevPage()
+                                resetState()
+                                return true
+                            }
+                            5 -> {
+                                gestureCompleted = true
+                                onNextPage()
+                                resetState()
+                                return true
+                            }
+                            else -> {}
+                        }
+                    }
+
+                    resetState()
+                    return true
+                }
+            }
+            return super.onTouchEvent(event)
+        }
+
+        private fun resetState() {
+            gesturePhase = 0
+            gestureCompleted = false
+            isIntercepting = false
+            isTimeout = false
+            timeoutRunnable = null
+            parent?.requestDisallowInterceptTouchEvent(false)
+        }
+
+        private fun isInMainArea(x: Float): Boolean {
+            val width = width.toFloat()
+            return x > width / 4
+        }
+
+        private fun isInLeftBottomRegion(rawX: Float, rawY: Float): Boolean {
+            val inLeft = rawX < screenWidth / 4
+            val inBottom = rawY > screenHeight / 2
+            return inLeft && inBottom
         }
     }
 
-    private fun refreshAppContainer() {
-        appContainer.removeAllViews()
+    // ========== 分页功能 ==========
+    private fun previousPage() {
+        val filtered = getFilteredApps()
+        val totalPages = ((filtered.size + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE).coerceAtLeast(1)
+        currentPage = (currentPage - 1 + totalPages) % totalPages
+        refreshAppSlots()
+        updatePageIndicator()
+    }
 
-        val screenWidth = context.resources.displayMetrics.widthPixels
-        val slotWidth = screenWidth / MAX_SLOTS
+    private fun nextPage() {
+        val filtered = getFilteredApps()
+        val totalPages = ((filtered.size + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE).coerceAtLeast(1)
+        currentPage = (currentPage + 1) % totalPages
+        refreshAppSlots()
+        updatePageIndicator()
+    }
 
-        val wrapper = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            setPadding(0, 0, 0, 0)
-        }
-
-        val displayApps = when (currentMode) {
+    private fun getFilteredApps(): List<Pair<String, String>> {
+        return when (currentMode) {
             Mode.NORMAL, Mode.ADD -> {
                 appSlots.filter {
-                    it.first.isNotEmpty() &&
-                            !blacklist.contains(it.first) &&
-                            !isAppFrozen(it.first)
+                    it.first.isNotEmpty() && !blacklist.contains(it.first) && !manager.isAppFrozen(it.first)
                 }
             }
             Mode.REMOVE -> {
@@ -579,63 +1169,124 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 }
             }
         }
+    }
+
+    private fun getCurrentPageApps(): List<Pair<String, String>> {
+        val filtered = getFilteredApps()
+        val start = currentPage * ITEMS_PER_PAGE
+        val end = minOf(start + ITEMS_PER_PAGE, filtered.size)
+        return if (start < filtered.size) filtered.subList(start, end) else emptyList()
+    }
+
+    private fun getTotalPages(): Int {
+        val total = getFilteredApps().size
+        return ((total + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE).coerceAtLeast(1)
+    }
+
+    // ========== 极简页面指示器 ==========
+    private fun updatePageIndicator() {
+        val totalPages = getTotalPages()
+        if (totalPages <= 1) {
+            pageIndicatorRef?.get()?.visibility = View.GONE
+            return
+        }
+
+        var indicator = pageIndicatorRef?.get()
+        if (indicator == null) {
+            indicator = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                visibility = View.VISIBLE
+                val dotSize = 2.dpToPx()
+                setPadding(0, 0, 0, 0)
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    dotSize
+                ).apply {
+                    gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                    bottomMargin = 1.dpToPx()
+                }
+            }
+            overlayViewRef?.get()?.addView(indicator)
+            pageIndicatorRef = WeakReference(indicator)
+        }
+
+        indicator?.let {
+            it.removeAllViews()
+            it.visibility = View.VISIBLE
+            
+            val dotSize = 2.dpToPx()
+            val spacing = 2.dpToPx()
+            
+            for (i in 0 until totalPages) {
+                val dot = View(context).apply {
+                    layoutParams = LinearLayout.LayoutParams(dotSize, dotSize).apply {
+                        setMargins(spacing / 2, 0, spacing / 2, 0)
+                    }
+                    setBackgroundColor(if (i == currentPage) Color.WHITE else Color.parseColor("#33FFFFFF"))
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        outlineProvider = object : android.view.ViewOutlineProvider() {
+                            override fun getOutline(view: View, outline: android.graphics.Outline) {
+                                outline.setRoundRect(0, 0, view.width, view.height, dotSize / 2f)
+                            }
+                        }
+                        clipToOutline = true
+                    }
+                }
+                it.addView(dot)
+            }
+
+            val params = it.layoutParams as? FrameLayout.LayoutParams
+            params?.let { p ->
+                p.height = dotSize
+                p.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                p.bottomMargin = 1.dpToPx()
+                it.layoutParams = p
+            }
+        }
+    }
+
+    private fun resetWorkbench() {
+        currentPage = 0
+        refreshAppSlots()
+        updatePageIndicator()
+    }
+
+    // ========== 应用槽位 ==========
+    fun refreshAppSlots() {
+        appContainer.removeAllViews()
+
+        val screenWidth = context.resources.displayMetrics.widthPixels
+        val slotWidth = screenWidth / MAX_SLOTS
+
+        val wrapper = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setPadding(0, 0, 0, 0)
+        }
+
+        val currentApps = getCurrentPageApps()
 
         val slot1View = createSlot1View(slotWidth)
         wrapper.addView(slot1View)
 
-        if (currentMode != Mode.REMOVE) {
-            val slot2View = if (foregroundPackage.isNotEmpty() &&
-                !blacklist.contains(foregroundPackage) &&
-                !isAppFrozen(foregroundPackage)) {
-                val appInfo = displayApps.find { it.first == foregroundPackage }
-                if (appInfo != null) {
-                    createAppItem(appInfo.first, appInfo.second, true, slotWidth)
-                } else {
-                    try {
-                        val pm = context.packageManager
-                        val info = pm.getApplicationInfo(foregroundPackage, 0)
-                        val name = pm.getApplicationLabel(info).toString()
-                        createAppItem(foregroundPackage, name, true, slotWidth)
-                    } catch (e: Exception) {
-                        createEmptySlot(slotWidth)
-                    }
-                }
-            } else {
-                createEmptySlot(slotWidth)
-            }
-            wrapper.addView(slot2View)
-        } else {
-            if (displayApps.isNotEmpty()) {
-                val (pkg, name) = displayApps[0]
-                wrapper.addView(createAppItem(pkg, name, false, slotWidth))
+        val maxItems = MAX_SLOTS - 1
+        for (i in 0 until maxItems) {
+            if (i < currentApps.size) {
+                val (pkg, name) = currentApps[i]
+                val isForeground = (pkg == foregroundPackage)
+                wrapper.addView(createAppItem(pkg, name, isForeground, slotWidth))
             } else {
                 wrapper.addView(createEmptySlot(slotWidth))
             }
         }
 
-        val remainingApps = when (currentMode) {
-            Mode.NORMAL, Mode.ADD -> {
-                displayApps.filter { it.first != foregroundPackage }
-            }
-            Mode.REMOVE -> {
-                if (displayApps.isNotEmpty()) displayApps.drop(1) else emptyList()
-            }
-        }
-
-        for ((pkg, name) in remainingApps) {
-            wrapper.addView(createAppItem(pkg, name, false, slotWidth))
-        }
-
-        val slotsFilled = 2 + remainingApps.size
-        for (i in slotsFilled until MAX_SLOTS) {
-            wrapper.addView(createEmptySlot(slotWidth))
-        }
-
         appContainer.addView(wrapper)
-
-        Handler(Looper.getMainLooper()).postDelayed({
-            scrollToStart()
-        }, 50)
+        updatePageIndicator()
     }
 
     private fun createSlot1View(slotWidth: Int): View {
@@ -657,20 +1308,18 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
             setOnClickListener {
                 when (currentMode) {
                     Mode.NORMAL -> {
-                        try {
-                            SidebarAccessibilityService.getInstance()?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
-                            scrollToStart()
-                        } catch (e: Exception) { }
+                        showAppsList()
+                        resetWorkbench()
                     }
                     Mode.ADD -> {
                         currentMode = Mode.NORMAL
-                        refreshAppContainer()
-                        scrollToStart()
+                        refreshAppSlots()
+                        Toast.makeText(context, "退出添加模式", Toast.LENGTH_SHORT).show()
                     }
                     Mode.REMOVE -> {
                         currentMode = Mode.NORMAL
-                        refreshAppContainer()
-                        scrollToStart()
+                        refreshAppSlots()
+                        Toast.makeText(context, "退出移除模式", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -679,14 +1328,14 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 when (currentMode) {
                     Mode.NORMAL -> {
                         currentMode = Mode.ADD
-                        refreshAppContainer()
-                        scrollToStart()
+                        refreshAppSlots()
+                        Toast.makeText(context, "添加模式（点击应用加入黑名单）", Toast.LENGTH_SHORT).show()
                         true
                     }
                     Mode.ADD -> {
                         currentMode = Mode.REMOVE
-                        refreshAppContainer()
-                        scrollToStart()
+                        refreshAppSlots()
+                        Toast.makeText(context, "移除模式（点击移除黑名单）", Toast.LENGTH_SHORT).show()
                         true
                     }
                     else -> false
@@ -700,7 +1349,7 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 item.addView(iconView)
 
                 val nameView = TextView(context).apply {
-                    text = "最近"
+                    text = "搜索"
                     textSize = 7f
                     setTextColor(Color.parseColor("#CCFFFFFF"))
                     gravity = Gravity.CENTER
@@ -779,16 +1428,10 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 if (resId != 0) {
                     setImageResource(resId)
                 } else {
-                    val path = "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/res/mipmap-hdpi/windows11_logo.png"
-                    val file = java.io.File(path)
-                    if (file.exists()) {
-                        setImageBitmap(android.graphics.BitmapFactory.decodeFile(path))
-                    } else {
-                        setImageResource(android.R.drawable.ic_menu_recent_history)
-                    }
+                    setImageResource(android.R.drawable.ic_menu_recent_history)
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                Log.e(TAG, "createWindowsIcon failed", e)
                 setImageResource(android.R.drawable.ic_menu_recent_history)
             }
             val iconSize = 32.dpToPx()
@@ -796,72 +1439,9 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
         }
     }
 
-    private fun isAppFrozen(pkg: String): Boolean {
-        return FreezeManager.isFrozen(context, pkg)
-    }
-
-    private fun freezeApp(pkg: String, name: String) {
-        val sh = ShizukuHelper.getInstance()
-        if (!sh.isReady()) {
-            return
-        }
-
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val success = sh.freezeApp(pkg)
-                withContext(Dispatchers.Main) {
-                    if (success) {
-                        FreezeManager.setFrozen(context, pkg, true)
-                        Toast.makeText(context, "已冻结 $name", Toast.LENGTH_SHORT).show()
-                        refreshAppContainer()
-                    } else {
-                        Toast.makeText(context, "冻结 $name 失败", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "冻结失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    private fun unfreezeApp(pkg: String, name: String) {
-        val sh = ShizukuHelper.getInstance()
-        if (!sh.isReady()) {
-            return
-        }
-
-        coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val success = sh.unfreezeApp(pkg)
-                withContext(Dispatchers.Main) {
-                    if (success) {
-                        FreezeManager.setFrozen(context, pkg, false)
-                        Toast.makeText(context, "已解冻 $name", Toast.LENGTH_SHORT).show()
-                        refreshAppContainer()
-                    } else {
-                        Toast.makeText(context, "解冻 $name 失败", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "解冻失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    private fun scrollToStart() {
-        scrollView?.smoothScrollTo(0, 0)
-    }
-
+    // ========== 应用项 ==========
     private fun createAppItem(packageName: String, appName: String, isForeground: Boolean, slotWidth: Int): View {
-        val isFrozen = isAppFrozen(packageName)
-
-        if (isFrozen && currentMode != Mode.REMOVE) {
-            return createEmptySlot(slotWidth)
-        }
+        val isFrozen = manager.isAppFrozen(packageName)
 
         val item = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -883,7 +1463,7 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                     setBackgroundColor(Color.parseColor("#33FF4444"))
                 }
                 isForeground -> {
-                    setBackgroundColor(Color.parseColor("#44FFAA00"))
+                    setBackgroundColor(Color.parseColor("#33FF8800"))
                 }
                 else -> {
                     setBackgroundColor(Color.TRANSPARENT)
@@ -898,7 +1478,6 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                                 unfreezeApp(packageName, appName)
                             } else {
                                 switchToApp(packageName, appName)
-                                scrollToStart()
                             }
                         }
                     }
@@ -907,16 +1486,18 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                             blacklist.add(packageName)
                             saveBlacklist()
                             appSlots.removeAll { it.first == packageName }
-                            refreshAppContainer()
-                            scrollToStart()
-                        } else if (blacklist.contains(packageName)) { }
+                            refreshAppSlots()
+                            Toast.makeText(context, "已屏蔽 $appName", Toast.LENGTH_SHORT).show()
+                        } else if (blacklist.contains(packageName)) {
+                            Toast.makeText(context, "$appName 已在黑名单中", Toast.LENGTH_SHORT).show()
+                        }
                     }
                     Mode.REMOVE -> {
                         if (packageName.isNotEmpty() && blacklist.contains(packageName)) {
                             blacklist.remove(packageName)
                             saveBlacklist()
-                            refreshAppContainer()
-                            scrollToStart()
+                            refreshAppSlots()
+                            Toast.makeText(context, "已移除 $appName", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -932,28 +1513,52 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                             isLongPressTriggered = false
 
                             val runnable = Runnable {
-                                isLongPressTriggered = true
-                                try {
-                                    val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        vibrator.vibrate(VibrationEffect.createOneShot(30, 50))
-                                    } else {
-                                        vibrator.vibrate(30)
+                                if (longPressRunnable != null) {
+                                    isLongPressTriggered = true
+                                    try {
+                                        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                            vibrator.vibrate(VibrationEffect.createOneShot(30, 50))
+                                        } else {
+                                            vibrator.vibrate(30)
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Vibrate failed", e)
                                     }
-                                } catch (e: Exception) { }
 
-                                val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
+                                    val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
+                                    Toast.makeText(context, "$actionText $appName", Toast.LENGTH_SHORT).show()
+                                    view.setBackgroundColor(Color.parseColor("#44FFAA00"))
+                                }
                             }
                             longPressRunnable = runnable
-                            Handler(Looper.getMainLooper()).postDelayed(runnable, 1000)
+                            handler.postDelayed(runnable, 500)
                         }
                         false
                     }
+
                     MotionEvent.ACTION_MOVE -> {
+                        val dy = longPressDownY - event.rawY
+                        if (Math.abs(dy) > 30 && !isLongPressTriggered) {
+                            handler.removeCallbacksAndMessages(null)
+                            longPressRunnable = null
+                            isLongPressTriggered = false
+                            longPressPackage = ""
+                            longPressName = ""
+                            view.setBackgroundColor(Color.TRANSPARENT)
+                            when {
+                                isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
+                                currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                                currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
+                                isForeground -> view.setBackgroundColor(Color.parseColor("#33FF8800"))
+                                else -> view.setBackgroundColor(Color.TRANSPARENT)
+                            }
+                            return@setOnTouchListener false
+                        }
+
                         if (isLongPressTriggered && longPressPackage.isNotEmpty()) {
-                            val dy = longPressDownY - event.rawY
                             if (dy > 60) {
-                                Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
+                                handler.removeCallbacksAndMessages(null)
                                 longPressRunnable = null
 
                                 if (isFrozen) {
@@ -970,22 +1575,27 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                         }
                         false
                     }
+
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        Handler(Looper.getMainLooper()).removeCallbacksAndMessages(null)
+                        handler.removeCallbacksAndMessages(null)
                         longPressRunnable = null
+
+                        if (isLongPressTriggered) {
+                            when {
+                                isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
+                                currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                                currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
+                                isForeground -> view.setBackgroundColor(Color.parseColor("#33FF8800"))
+                                else -> view.setBackgroundColor(Color.TRANSPARENT)
+                            }
+                        }
+
                         isLongPressTriggered = false
                         longPressPackage = ""
                         longPressName = ""
-                        view.setBackgroundColor(Color.TRANSPARENT)
-                        when {
-                            isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
-                            currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
-                            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
-                            isForeground -> view.setBackgroundColor(Color.parseColor("#44FFAA00"))
-                            else -> view.setBackgroundColor(Color.TRANSPARENT)
-                        }
                         false
                     }
+
                     else -> false
                 }
             }
@@ -1010,14 +1620,14 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
 
             val nameView = TextView(context).apply {
                 text = if (isFrozen) "❄️ $appName" else appName
-                textSize = if (isForeground) 8f else 7f
+                textSize = 7f
                 setTextColor(if (isForeground) Color.WHITE else Color.parseColor("#CCFFFFFF"))
                 gravity = Gravity.CENTER
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
-                setPadding(0, 0.dpToPx(), 0, 0)
+                setPadding(0, 2.dpToPx(), 0, 0)
                 maxLines = 1
                 if (isForeground) {
                     setTypeface(null, android.graphics.Typeface.BOLD)
@@ -1030,7 +1640,7 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
     }
 
     private fun createEmptySlot(slotWidth: Int): View {
-        val item = LinearLayout(context).apply {
+        return LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 0)
@@ -1039,15 +1649,29 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 LinearLayout.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(Color.TRANSPARENT)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener {
-                SidebarAccessibilityService.sidebarManager?.showAppsPanel()
-            }
+            isClickable = false
+            isFocusable = false
         }
-        return item
     }
 
+    // ========== 冻结/解冻 ==========
+    private fun freezeApp(pkg: String, name: String) {
+        manager.freezeApp(pkg) { success ->
+            if (success) {
+                refreshAppSlots()
+            }
+        }
+    }
+
+    private fun unfreezeApp(pkg: String, name: String) {
+        manager.unfreezeApp(pkg) { success ->
+            if (success) {
+                refreshAppSlots()
+            }
+        }
+    }
+
+    // ========== 其他辅助方法 ==========
     private fun fallbackIcon(packageName: String): Drawable? {
         return try {
             val pm = context.packageManager
@@ -1065,6 +1689,8 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 val topActivity = task.topActivity
                 if (topActivity != null && topActivity.packageName == packageName) {
                     activityManager.moveTaskToFront(task.id, 0)
+                    Toast.makeText(context, appName, Toast.LENGTH_SHORT).show()
+                    resetWorkbench()
                     return
                 }
             }
@@ -1074,8 +1700,13 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
             if (launchIntent != null) {
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(launchIntent)
+                Toast.makeText(context, appName, Toast.LENGTH_SHORT).show()
+                resetWorkbench()
             }
-        } catch (e: Exception) { }
+        } catch (e: Exception) {
+            Log.e(TAG, "switchToApp failed", e)
+            Toast.makeText(context, "启动失败", Toast.LENGTH_SHORT).show()
+        }
 
         val existingIndex = appSlots.indexOfFirst { it.first == packageName }
         if (existingIndex >= 0) {
@@ -1087,7 +1718,35 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
                 appSlots.removeAt(appSlots.size - 1)
             }
         }
-        refreshAppContainer()
+        refreshAppSlots()
+    }
+
+    private fun getNavBarHeight(): Int {
+        var result = 0
+        val resourceId = context.resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        if (resourceId > 0) {
+            result = context.resources.getDimensionPixelSize(resourceId)
+        }
+        if (result == 0) {
+            val statusBarHeight = getStatusBarHeight()
+            result = (statusBarHeight * 1.5f).toInt()
+        }
+        if (result == 0) {
+            result = (120 * context.resources.displayMetrics.density).toInt()
+        }
+        return result
+    }
+
+    private fun getStatusBarHeight(): Int {
+        var result = 0
+        val resourceId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (resourceId > 0) {
+            result = context.resources.getDimensionPixelSize(resourceId)
+        }
+        if (result == 0) {
+            result = (80 * context.resources.displayMetrics.density).toInt()
+        }
+        return result
     }
 
     private fun activateFreeformMode() {
@@ -1100,38 +1759,60 @@ telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_CALL_STAT
         }
     }
 
-    fun hide() {
-        WorkbenchLogger.log("Workbench", "hide() called")
-        destroyGestureStrip()
-        currentMode = Mode.NORMAL
-        overlayView?.let {
+    private fun performHome() {
+        try {
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+        } catch (e: Exception) {
+            Log.e(TAG, "performHome via service failed", e)
             try {
-                windowManager.removeView(it)
-            } catch (e: Exception) {
-                e.printStackTrace()
+                val homeIntent = Intent(Intent.ACTION_MAIN)
+                homeIntent.addCategory(Intent.CATEGORY_HOME)
+                homeIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                context.startActivity(homeIntent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "performHome via intent failed", e2)
             }
         }
-        overlayView = null
-        isShowing = false
+        resetWorkbench()
     }
 
-    fun toggle() {
-        WorkbenchLogger.log("Workbench", "toggle() called, current isShowing: $isShowing")
-        if (isShowing) hide() else show()
+    private fun performRecent() {
+        try {
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+        } catch (e: Exception) {
+            Log.e(TAG, "performRecent via service failed", e)
+            try {
+                val intent = Intent(Intent.ACTION_MAIN)
+                intent.addCategory(Intent.CATEGORY_LAUNCHER)
+                intent.setPackage("com.android.systemui")
+                context.startActivity(intent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "performRecent via intent failed", e2)
+                Toast.makeText(context, "无法打开最近任务", Toast.LENGTH_SHORT).show()
+            }
+        }
+        resetWorkbench()
     }
 
-    fun isShowing(): Boolean = isShowing
-
+    // ========== 清理 ==========
     fun cleanup() {
+        perfLog("cleanup")
         try {
             context.unregisterReceiver(screenStateReceiver)
-            @Suppress("DEPRECATION")
-telephonyManager?.listen(phoneStateListener, PhoneStateListener.LISTEN_NONE)
-        } catch (e: Exception) { }
+        } catch (e: Exception) {
+            Log.e(TAG, "unregisterReceiver failed", e)
+        }
+        preCreateJob?.cancel()
+        preCreateJob = null
         hide()
-        coroutineScope.cancel()
+        if (isAppsPanelShowing) {
+            preCreatedAppListPanel?.clearSearch()
+            hideAppsList()
+        }
+        handler.removeCallbacksAndMessages(null)
     }
 
+    // ========== 扩展函数 ==========
     private fun Int.dpToPx(): Int {
         return (this * context.resources.displayMetrics.density).toInt()
     }
