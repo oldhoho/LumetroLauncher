@@ -46,6 +46,9 @@ class WorkbenchSettingsActivity : AppCompatActivity() {
     private lateinit var tvAppListCornerValue: TextView
     private lateinit var tvAppListDimValue: TextView
 
+    // ========== 磁贴面板开关 ==========
+    private lateinit var switchTilesPanel: Switch
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_workbench_settings)
@@ -73,6 +76,9 @@ class WorkbenchSettingsActivity : AppCompatActivity() {
         initViews()
         setupListeners()
         loadSettings()
+        
+        // ========== 应用持久化的手势条设置 ==========
+        applySavedGestureSettings()
     }
 
     private fun initViews() {
@@ -102,6 +108,16 @@ class WorkbenchSettingsActivity : AppCompatActivity() {
         tvAppListOffsetValue = findViewById(R.id.tv_applist_offset_value)
         tvAppListCornerValue = findViewById(R.id.tv_applist_corner_value)
         tvAppListDimValue = findViewById(R.id.tv_applist_dim_value)
+
+        // ========== 磁贴面板开关 ==========
+        switchTilesPanel = findViewById(R.id.switch_tiles_panel)
+
+        // ========== 设置SeekBar范围 ==========
+        seekbarAppListOffset.max = 400      // 0-400dp
+        seekbarAppListHeight.max = 190      // 0.1-2.0
+        seekbarAppListWidth.max = 100       // 0.5-1.0
+        seekbarAppListCorner.max = 50       // 0-50dp
+        seekbarAppListDim.max = 90          // 0-90%
     }
 
     private fun setupListeners() {
@@ -133,90 +149,49 @@ class WorkbenchSettingsActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
-        // WorkbenchSettingsActivity.kt - 修改手势条监听器，立即持久化
+        // ========== 手势条宽度 ==========
+        seekbarGestureWidth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val width = (2 + progress).toInt()
+                tvGestureWidthValue.text = "${width}dp"
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
 
-// ========== 手势条宽度 ==========
-seekbarGestureWidth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-        val width = (2 + progress).toInt()
-        tvGestureWidthValue.text = "${width}dp"
-        if (fromUser) {
-            // ========== 立即保存到持久化 ==========
-            settings.gestureStripWidth = width
-            // 也立即应用到手势条
-            gestureManager.updateConfig(
-                width,
-                settings.gestureStripHeight,
-                settings.gestureStripOffset,
-                settings.gestureStripAlpha
-            )
-        }
-    }
-    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-})
+        // ========== 手势条高度 ==========
+        seekbarGestureHeight.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val height = if (progress == 0) 0 else (20 + progress * 8).toInt()
+                tvGestureHeightValue.text = if (height == 0) "全屏" else "${height}dp"
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
 
-// ========== 手势条高度 ==========
-seekbarGestureHeight.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-        val height = if (progress == 0) 0 else (20 + progress * 8).toInt()
-        tvGestureHeightValue.text = if (height == 0) "全屏" else "${height}dp"
-        if (fromUser) {
-            settings.gestureStripHeight = height
-            gestureManager.updateConfig(
-                settings.gestureStripWidth,
-                height,
-                settings.gestureStripOffset,
-                settings.gestureStripAlpha
-            )
-        }
-    }
-    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-})
+        // ========== 手势条偏移 ==========
+        seekbarGestureOffset.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val offset = (progress * 2).toInt()
+                tvGestureOffsetValue.text = "${offset}dp"
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
 
-// ========== 手势条偏移 ==========
-seekbarGestureOffset.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-        val offset = (progress * 2).toInt()
-        tvGestureOffsetValue.text = "${offset}dp"
-        if (fromUser) {
-            settings.gestureStripOffset = offset
-            gestureManager.updateConfig(
-                settings.gestureStripWidth,
-                settings.gestureStripHeight,
-                offset,
-                settings.gestureStripAlpha
-            )
-        }
-    }
-    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-})
+        // ========== 手势条透明度 ==========
+        seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                tvGestureAlphaValue.text = "${progress}%"
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
 
-// ========== 手势条透明度 ==========
-seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-        tvGestureAlphaValue.text = "${progress}%"
-        if (fromUser) {
-            val alpha = progress / 100f
-            settings.gestureStripAlpha = alpha
-            gestureManager.updateConfig(
-                settings.gestureStripWidth,
-                settings.gestureStripHeight,
-                settings.gestureStripOffset,
-                alpha
-            )
-        }
-    }
-    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-})
-
-        // ========== 应用列表宽度 ==========
+        // ========== 应用列表宽度（0.5-1.0） ==========
         seekbarAppListWidth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val ratio = (50 + progress / 2) / 100f
+                val ratio = (50 + progress * 0.5f) / 100f
                 tvAppListWidthValue.text = "${(ratio * 100).toInt()}%"
                 if (fromUser) {
                     settings.appListWidthRatio = ratio
@@ -227,10 +202,10 @@ seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeL
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
-        // ========== 应用列表高度 ==========
+        // ========== 应用列表高度（0.1-2.0） ==========
         seekbarAppListHeight.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val ratio = (30 + progress * 0.7f) / 100f
+                val ratio = (10 + progress) / 100f
                 tvAppListHeightValue.text = "${(ratio * 100).toInt()}%"
                 if (fromUser) {
                     settings.appListHeightRatio = ratio
@@ -241,10 +216,10 @@ seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeL
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
-        // ========== 应用列表垂直偏移 ==========
+        // ========== 应用列表垂直偏移（0-400dp） ==========
         seekbarAppListOffset.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val offset = progress * 2
+                val offset = progress
                 tvAppListOffsetValue.text = "${offset}dp"
                 if (fromUser) {
                     settings.appListVerticalOffset = offset
@@ -255,7 +230,7 @@ seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeL
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
-        // ========== 应用列表圆角 ==========
+        // ========== 应用列表圆角（0-50dp） ==========
         seekbarAppListCorner.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val radius = progress
@@ -269,10 +244,10 @@ seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeL
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
-        // ========== 应用列表背景透明度 ==========
+        // ========== 应用列表背景透明度（0-0.9） ==========
         seekbarAppListDim.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val alpha = progress / 100f
+                val alpha = progress / 100f * 0.9f
                 tvAppListDimValue.text = "${(alpha * 100).toInt()}%"
                 if (fromUser) {
                     settings.appListDimAlpha = alpha
@@ -282,6 +257,19 @@ seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeL
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
+
+        // ========== 磁贴面板禁用开关 ==========
+        switchTilesPanel.setOnCheckedChangeListener { _, isChecked ->
+            settings.tilesPanelEnabled = isChecked
+            if (isChecked) {
+                SidebarAccessibilityService.sidebarManager?.createGestureStrip()
+                Toast.makeText(this, "磁贴面板已启用", Toast.LENGTH_SHORT).show()
+            } else {
+                SidebarAccessibilityService.sidebarManager?.destroyGestureStrip()
+                SidebarAccessibilityService.sidebarManager?.hidePanelImmediately()
+                Toast.makeText(this, "磁贴面板已禁用", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         // ========== 按钮监听器 ==========
         findViewById<Button>(R.id.btn_apply_settings).setOnClickListener {
@@ -341,54 +329,60 @@ seekbarGestureAlpha.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeL
         }
     }
 
-    // WorkbenchSettingsActivity.kt - 修改 applySettings()
+    private fun applySettings() {
+        try {
+            // ========== 应用工作台设置 ==========
+            val heightProgress = seekbarHeight.progress
+            val height = (5 + heightProgress * 2.95).toInt()
+            settings.height = height
 
-private fun applySettings() {
-    try {
-        // ========== 应用工作台设置 ==========
-        val heightProgress = seekbarHeight.progress
-        val height = (5 + heightProgress * 2.95).toInt()
-        settings.height = height
+            // ========== 应用手势条设置并持久化 ==========
+            val width = (2 + seekbarGestureWidth.progress).toInt()
+            val heightVal = if (seekbarGestureHeight.progress == 0) 0 else (20 + seekbarGestureHeight.progress * 8).toInt()
+            val offset = (seekbarGestureOffset.progress * 2).toInt()
+            val alpha = seekbarGestureAlpha.progress / 100f
 
-        // ========== 应用手势条设置（保存到持久化） ==========
-        val width = (2 + seekbarGestureWidth.progress).toInt()
-        val heightVal = if (seekbarGestureHeight.progress == 0) 0 else (20 + seekbarGestureHeight.progress * 8).toInt()
-        val offset = (seekbarGestureOffset.progress * 2).toInt()
-        val alpha = seekbarGestureAlpha.progress / 100f
+            gestureManager.updateConfig(width, heightVal, offset, alpha)
 
-        // 保存到 Settings（持久化）
-        settings.gestureStripWidth = width
-        settings.gestureStripHeight = heightVal
-        settings.gestureStripOffset = offset
-        settings.gestureStripAlpha = alpha
+            // 保存到 settings（持久化）
+            settings.gestureStripWidth = width
+            settings.gestureStripHeight = heightVal
+            settings.gestureStripOffset = offset
+            settings.gestureStripAlpha = alpha
 
-        // 应用到手势条
-        gestureManager.updateConfig(width, heightVal, offset, alpha)
+            // ========== 应用应用列表设置 ==========
+            settings.appListWidthRatio = (50 + seekbarAppListWidth.progress * 0.5f) / 100f
+            settings.appListHeightRatio = (10 + seekbarAppListHeight.progress) / 100f
+            settings.appListVerticalOffset = seekbarAppListOffset.progress
+            settings.appListCornerRadius = seekbarAppListCorner.progress
+            settings.appListDimAlpha = seekbarAppListDim.progress / 100f * 0.9f
 
-        // ========== 应用应用列表设置 ==========
-        settings.appListWidthRatio = (50 + seekbarAppListWidth.progress / 2) / 100f
-        settings.appListHeightRatio = (30 + seekbarAppListHeight.progress * 0.7f) / 100f
-        settings.appListVerticalOffset = seekbarAppListOffset.progress * 2
-        settings.appListCornerRadius = seekbarAppListCorner.progress
-        settings.appListDimAlpha = seekbarAppListDim.progress / 100f
+            // ========== 磁贴面板开关 ==========
+            settings.tilesPanelEnabled = switchTilesPanel.isChecked
+            if (!switchTilesPanel.isChecked) {
+                SidebarAccessibilityService.sidebarManager?.destroyGestureStrip()
+                SidebarAccessibilityService.sidebarManager?.hidePanelImmediately()
+            } else {
+                SidebarAccessibilityService.sidebarManager?.createGestureStrip()
+            }
 
-        if (settings.enabled) {
-            WorkbenchManager.showWorkbench()
+            if (settings.enabled) {
+                WorkbenchManager.showWorkbench()
+            }
+
+            writeLog("Settings applied successfully")
+            Toast.makeText(
+                this,
+                "设置已应用\n高度: ${height}dp\n手势偏移: ${offset}dp\n面板宽度: ${(settings.appListWidthRatio * 100).toInt()}%\n面板高度: ${(settings.appListHeightRatio * 100).toInt()}%",
+                Toast.LENGTH_SHORT
+            ).show()
+
+        } catch (e: Exception) {
+            writeLog("❌ Apply failed: ${e.message}")
+            e.printStackTrace()
+            Toast.makeText(this, "应用失败: ${e.message}", Toast.LENGTH_LONG).show()
         }
-
-        writeLog("Settings applied successfully")
-        Toast.makeText(
-            this,
-            "设置已应用\n高度: ${height}dp\n手势偏移: ${offset}dp\n面板宽度: ${(settings.appListWidthRatio * 100).toInt()}%",
-            Toast.LENGTH_SHORT
-        ).show()
-
-    } catch (e: Exception) {
-        writeLog("❌ Apply failed: ${e.message}")
-        e.printStackTrace()
-        Toast.makeText(this, "应用失败: ${e.message}", Toast.LENGTH_LONG).show()
     }
-}
 
     private fun resetSettings() {
         settings.resetToDefaults()
@@ -409,46 +403,59 @@ private fun applySettings() {
         seekbarHeight.progress = progress
         tvHeightValue.text = "${height}dp"
 
-        // ========== 手势条设置 ==========
-        val density = resources.displayMetrics.density
-        val currentWidth = (gestureManager.stripWidth / density).toInt()
-        val currentHeight = if (gestureManager.stripHeight == 0) 0 else (gestureManager.stripHeight / density).toInt()
-        val currentOffset = (gestureManager.stripOffset / density).toInt()
-        val currentAlpha = (gestureManager.stripAlpha * 100).toInt()
+        // ========== 手势条设置（从 settings 读取持久化数据） ==========
+        val savedWidth = settings.gestureStripWidth
+        val savedHeight = settings.gestureStripHeight
+        val savedOffset = settings.gestureStripOffset
+        val savedAlpha = (settings.gestureStripAlpha * 100).toInt()
 
-        seekbarGestureWidth.progress = (currentWidth - 2).coerceIn(0, 30)
-        tvGestureWidthValue.text = "${currentWidth}dp"
+        seekbarGestureWidth.progress = (savedWidth - 2).coerceIn(0, 30)
+        tvGestureWidthValue.text = "${savedWidth}dp"
 
-        val heightProgress = if (currentHeight == 0) 0 else ((currentHeight - 20) / 8).coerceIn(0, 100)
+        val heightProgress = if (savedHeight == 0) 0 else ((savedHeight - 20) / 8).coerceIn(0, 100)
         seekbarGestureHeight.progress = heightProgress
-        tvGestureHeightValue.text = if (currentHeight == 0) "全屏" else "${currentHeight}dp"
+        tvGestureHeightValue.text = if (savedHeight == 0) "全屏" else "${savedHeight}dp"
 
-        seekbarGestureOffset.progress = (currentOffset / 2).coerceIn(0, 400)
-        tvGestureOffsetValue.text = "${currentOffset}dp"
+        seekbarGestureOffset.progress = (savedOffset / 2).coerceIn(0, 400)
+        tvGestureOffsetValue.text = "${savedOffset}dp"
 
-        seekbarGestureAlpha.progress = currentAlpha.coerceIn(0, 100)
-        tvGestureAlphaValue.text = "${currentAlpha}%"
+        seekbarGestureAlpha.progress = savedAlpha.coerceIn(0, 100)
+        tvGestureAlphaValue.text = "${savedAlpha}%"
 
         // ========== 应用列表设置 ==========
         val widthRatio = settings.appListWidthRatio
-        seekbarAppListWidth.progress = ((widthRatio - 0.5f) * 200).toInt().coerceIn(0, 100)
+        seekbarAppListWidth.progress = ((widthRatio - 0.5f) / 0.5f * 100).toInt().coerceIn(0, 100)
         tvAppListWidthValue.text = "${(widthRatio * 100).toInt()}%"
 
         val heightRatio = settings.appListHeightRatio
-        seekbarAppListHeight.progress = ((heightRatio - 0.3f) / 0.7f * 100).toInt().coerceIn(0, 100)
+        seekbarAppListHeight.progress = ((heightRatio - 0.1f) * 100).toInt().coerceIn(0, 190)
         tvAppListHeightValue.text = "${(heightRatio * 100).toInt()}%"
 
         val verticalOffset = settings.appListVerticalOffset
-        seekbarAppListOffset.progress = (verticalOffset / 2).coerceIn(0, 100)
+        seekbarAppListOffset.progress = verticalOffset.coerceIn(0, 400)
         tvAppListOffsetValue.text = "${verticalOffset}dp"
 
         val cornerRadius = settings.appListCornerRadius
-        seekbarAppListCorner.progress = cornerRadius.coerceIn(0, 60)
+        seekbarAppListCorner.progress = cornerRadius.coerceIn(0, 50)
         tvAppListCornerValue.text = "${cornerRadius}dp"
 
         val dimAlpha = settings.appListDimAlpha
-        seekbarAppListDim.progress = (dimAlpha * 100).toInt().coerceIn(0, 100)
+        seekbarAppListDim.progress = (dimAlpha / 0.9f * 100).toInt().coerceIn(0, 90)
         tvAppListDimValue.text = "${(dimAlpha * 100).toInt()}%"
+
+        // ========== 磁贴面板开关 ==========
+        switchTilesPanel.isChecked = settings.tilesPanelEnabled
+    }
+
+    /**
+     * 应用持久化的手势条设置
+     */
+    private fun applySavedGestureSettings() {
+        val savedWidth = settings.gestureStripWidth
+        val savedHeight = settings.gestureStripHeight
+        val savedOffset = settings.gestureStripOffset
+        val savedAlpha = settings.gestureStripAlpha
+        gestureManager.updateConfig(savedWidth, savedHeight, savedOffset, savedAlpha)
     }
 
     private fun writeLog(message: String) {

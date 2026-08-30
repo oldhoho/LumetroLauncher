@@ -2181,7 +2181,10 @@ private fun sortByUsage(apps: List<App>): List<App> {
                 onShowSettings = { showPanelBgDialog() },
                 onShowFreezeDialog = { showFreezeListDialog() },
                 onPinApp = { app -> pinApp(app) },
-                onRefreshApps = { refreshAppsIfNeeded() }
+                onRefreshApps = { refreshAppsIfNeeded() },
+                onAppsChanged = { apps ->
+    // Sidebar 不处理，留空
+}
             )
             appListPanelRef = WeakReference(panel)
         }

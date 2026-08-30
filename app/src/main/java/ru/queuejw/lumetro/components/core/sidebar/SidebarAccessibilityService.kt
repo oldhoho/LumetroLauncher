@@ -163,18 +163,17 @@ class SidebarAccessibilityService : AccessibilityService() {
                 }
                 Log.d(TAG, "Left gesture strip initialized with restored settings")
 
-                // ========== SidebarManager 延迟初始化 ==========
-                Handler(Looper.getMainLooper()).postDelayed({
-                    try {
-                        sidebarManager = SidebarManager(this).apply {
-                            createGestureStrip()
-                            configureTouchPassthrough()
-                        }
-                        Log.d(TAG, "Sidebar initialized successfully")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to init sidebar", e)
+                // ========== 初始化右侧手势条和磁贴面板（检查开关） ==========
+                if (settings.tilesPanelEnabled) {
+                    sidebarManager = SidebarManager(this).apply {
+                        createGestureStrip()
+                        configureTouchPassthrough()
                     }
-                }, 500)
+                    Log.d(TAG, "Sidebar initialized (enabled)")
+                } else {
+                    Log.d(TAG, "Sidebar disabled by user setting")
+                    sidebarManager = SidebarManager(this)
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to init", e)
@@ -231,10 +230,9 @@ class SidebarAccessibilityService : AccessibilityService() {
         }
     }
 
-    // ========== 检查全屏状态（排除 Lumetro 自身） ==========
+    // ========== 检查全屏状态 ==========
     private fun checkFullscreenState(packageName: String) {
         try {
-            // ========== 如果是 Lumetro 自身，不处理全屏检测 ==========
             if (packageName == applicationContext.packageName) {
                 return
             }
@@ -310,8 +308,7 @@ class SidebarAccessibilityService : AccessibilityService() {
             workbenchManager = null
 
             sidebarManager?.destroy()
-            sidebarManager = null
-        } catch (e: Exception) {
+            sidebarManager = null        } catch (e: Exception) {
             Log.e(TAG, "onDestroy error", e)
         }
     }

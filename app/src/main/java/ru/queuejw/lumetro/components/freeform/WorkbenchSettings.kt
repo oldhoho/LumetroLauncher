@@ -7,7 +7,6 @@ class WorkbenchSettings(context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("workbench_settings", Context.MODE_PRIVATE)
 
-    // ========== 工作台设置 ==========
     var height: Int
         get() = prefs.getInt("workbench_height", 180)
         set(value) = prefs.edit().putInt("workbench_height", value).apply()
@@ -31,44 +30,41 @@ class WorkbenchSettings(context: Context) {
     
     var appListHeightRatio: Float
         get() = prefs.getFloat("app_list_height_ratio", 0.9f)
-        set(value) = prefs.edit().putFloat("app_list_height_ratio", value.coerceIn(0.3f, 1.0f)).apply()
+        set(value) = prefs.edit().putFloat("app_list_height_ratio", value.coerceIn(0.1f, 2.0f)).apply()
     
     var appListVerticalOffset: Int
         get() = prefs.getInt("app_list_vertical_offset", 0)
-        set(value) = prefs.edit().putInt("app_list_vertical_offset", value).apply()
+        set(value) = prefs.edit().putInt("app_list_vertical_offset", value.coerceIn(0, 400)).apply()
     
     var appListCornerRadius: Int
         get() = prefs.getInt("app_list_corner_radius", 24)
-        set(value) = prefs.edit().putInt("app_list_corner_radius", value.coerceIn(0, 60)).apply()
+        set(value) = prefs.edit().putInt("app_list_corner_radius", value.coerceIn(0, 50)).apply()
     
     var appListDimAlpha: Float
         get() = prefs.getFloat("app_list_dim_alpha", 0.8f)
-        set(value) = prefs.edit().putFloat("app_list_dim_alpha", value.coerceIn(0.0f, 1.0f)).apply()
+        set(value) = prefs.edit().putFloat("app_list_dim_alpha", value.coerceIn(0.0f, 0.9f)).apply()
 
     // ========== 手势条设置（持久化） ==========
     var gestureStripWidth: Int
         get() = prefs.getInt("gesture_strip_width", 6)
-        set(value) {
-            prefs.edit().putInt("gesture_strip_width", value.coerceIn(2, 32)).apply()
-        }
+        set(value) = prefs.edit().putInt("gesture_strip_width", value.coerceIn(2, 32)).apply()
 
     var gestureStripHeight: Int
         get() = prefs.getInt("gesture_strip_height", 0)
-        set(value) {
-            prefs.edit().putInt("gesture_strip_height", value.coerceAtLeast(0)).apply()
-        }
+        set(value) = prefs.edit().putInt("gesture_strip_height", value.coerceAtLeast(0)).apply()
 
     var gestureStripOffset: Int
         get() = prefs.getInt("gesture_strip_offset", 0)
-        set(value) {
-            prefs.edit().putInt("gesture_strip_offset", value.coerceIn(0, 800)).apply()
-        }
+        set(value) = prefs.edit().putInt("gesture_strip_offset", value.coerceIn(0, 800)).apply()
 
     var gestureStripAlpha: Float
         get() = prefs.getFloat("gesture_strip_alpha", 0.3f)
-        set(value) {
-            prefs.edit().putFloat("gesture_strip_alpha", value.coerceIn(0.0f, 1.0f)).apply()
-        }
+        set(value) = prefs.edit().putFloat("gesture_strip_alpha", value.coerceIn(0.0f, 1.0f)).apply()
+
+    // ========== 磁贴面板和右侧手势条禁用开关 ==========
+    var tilesPanelEnabled: Boolean
+        get() = prefs.getBoolean("tiles_panel_enabled", true)
+        set(value) = prefs.edit().putBoolean("tiles_panel_enabled", value).apply()
 
     fun resetToDefaults() {
         try {
@@ -86,6 +82,7 @@ class WorkbenchSettings(context: Context) {
             gestureStripHeight = 0
             gestureStripOffset = 0
             gestureStripAlpha = 0.3f
+            tilesPanelEnabled = true
         } catch (e: Exception) {
             // 忽略
         }

@@ -26,6 +26,7 @@ import androidx.appcompat.app.AppCompatActivity
 import rikka.shizuku.Shizuku
 import ru.queuejw.lumetro.components.core.sidebar.SidebarAccessibilityService
 import ru.queuejw.lumetro.components.freeform.WorkbenchManager
+import ru.queuejw.lumetro.components.freeform.WorkbenchSettings
 
 class MainActivity : AppCompatActivity() {
 
@@ -125,19 +126,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initApp() {
-        // 延迟加载壁纸
         Handler(Looper.getMainLooper()).postDelayed({
             loadWallpaper()
         }, 300)
 
         setupReceiver()
 
-        // 延迟初始化 Shizuku
         Handler(Looper.getMainLooper()).postDelayed({
             initShizuku()
         }, 500)
 
-        // 延迟检查无障碍
         Handler(Looper.getMainLooper()).postDelayed({
             if (!SidebarAccessibilityService.isServiceEnabled(this)) {
                 Toast.makeText(this, "请开启无障碍服务", Toast.LENGTH_LONG).show()
@@ -154,7 +152,6 @@ class MainActivity : AppCompatActivity() {
                 wallpaperView.setImageDrawable(wallpaperDrawable)
             } else {
                 wallpaperView.setBackgroundColor(0xFF1A1A1A.toInt())
-                // 重试一次
                 Handler(Looper.getMainLooper()).postDelayed({
                     try {
                         val retryDrawable = WallpaperManager.getInstance(this).drawable
@@ -178,16 +175,13 @@ class MainActivity : AppCompatActivity() {
         registerReceiver(bgReceiver, IntentFilter("ru.queuejw.lumetro.UPDATE_MAIN_BG"), RECEIVER_EXPORTED)
     }
 
-    // ========== 注册解锁广播 ==========
     private fun registerUnlockReceiver() {
         unlockReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (Intent.ACTION_USER_PRESENT == intent.action) {
-                    // 解锁后预初始化工作台
                     Handler(Looper.getMainLooper()).postDelayed({
                         try {
                             WorkbenchManager.getInstance()?.apply {
-                                // 预加载数据
                                 getCachedApps()
                             }
                         } catch (e: Exception) {
@@ -286,23 +280,24 @@ class MainActivity : AppCompatActivity() {
 
                 when {
                     isHorizontal && diffX < -80 -> {
-                        SidebarAccessibilityService.sidebarManager?.let {
-                            if (it.isPanelExpanded()) {
-                                it.hidePanel()
-                            } else {
-                                it.showPanel()
+                        // ========== 检查磁贴面板是否启用 ==========
+                        val settings = WorkbenchSettings(this)
+                        if (settings.tilesPanelEnabled) {
+                            SidebarAccessibilityService.sidebarManager?.let {
+                                if (it.isPanelExpanded()) {
+                                    it.hidePanel()
+                                } else {
+                                    it.showPanel()
+                                }
                             }
                         }
                         return true
                     }
-                    // ========== 上滑：打开工作台的搜索应用界面 ==========
                     isVertical && diffY < -80 -> {
                         try {
-                            // 获取 WorkbenchManager 实例，调用 showAppsList()
                             WorkbenchManager.getInstance()?.showAppsList()
                         } catch (e: Exception) {
                             e.printStackTrace()
-                            // 降级方案：使用侧边栏的应用列表
                             SidebarAccessibilityService.sidebarManager?.showAppsPanel()
                         }
                         return true

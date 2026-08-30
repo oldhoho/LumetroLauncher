@@ -456,6 +456,30 @@
                 android:max="100"
                 android:progress="80" />
         </LinearLayout>
+        
+        <!-- ========== 磁贴面板开关 ========== -->
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingVertical="8dp">
+
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="磁贴面板"
+        android:textColor="@android:color/white"
+        android:textSize="14sp" />
+
+    <Switch
+        android:id="@+id/switch_tiles_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content" />
+
+</LinearLayout>
+        
 
         <!-- ========== 分隔线 ========== -->
         <View
