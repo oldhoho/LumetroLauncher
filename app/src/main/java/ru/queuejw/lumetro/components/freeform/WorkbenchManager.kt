@@ -1,5 +1,12 @@
 package ru.queuejw.lumetro.components.freeform
 
+import android.graphics.Color
+import android.view.Gravity
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import android.accessibilityservice.AccessibilityService
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -27,6 +34,51 @@ import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+class FreezeListAdapter(
+    private val context: Context,
+    private val appList: List<Pair<String, String>>,
+    private var freezeList: Set<String>,
+    private val onItemClick: (String, String, Boolean) -> Unit
+) : RecyclerView.Adapter<FreezeListAdapter.ViewHolder>() {
+
+    class ViewHolder(val container: LinearLayout, val textView: TextView) : RecyclerView.ViewHolder(container)
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(20.dpToPx(), 12.dpToPx(), 20.dpToPx(), 12.dpToPx())
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val textView = TextView(context).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+        }
+        container.addView(textView)
+        return ViewHolder(container, textView)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val (pkg, name) = appList[position]
+        val isInList = freezeList.contains(pkg)
+        holder.textView.text = "${if (isInList) "✓ " else "  "}$name"
+        holder.textView.setTextColor(if (isInList) Color.parseColor("#FF4CAF50") else Color.WHITE)
+        
+        holder.container.setOnClickListener {
+            onItemClick(pkg, name, isInList)
+        }
+    }
+
+    override fun getItemCount(): Int = appList.size
+
+    fun updateFreezeList(newList: Set<String>) {
+        freezeList = newList
+        // 只刷新可见项
+        notifyDataSetChanged()
+    }
+
+    private fun Int.dpToPx(): Int = (this * context.resources.displayMetrics.density).toInt()
+}
 
 class WorkbenchManager(
     private val context: Context,
@@ -528,53 +580,63 @@ class WorkbenchManager(
     // ========== 冻结列表管理 ==========
 
     fun showFreezeManagementDialog(activity: Activity) {
-        try {
-            currentActivityRef = WeakReference(activity)
-            val freezeList = getFreezeList()
-            val pm = context.packageManager
-            val appList = mutableListOf<Pair<String, String>>()
-            
-            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            for (info in apps) {
-                if (info.packageName == context.packageName) continue
-                if ((info.flags and ApplicationInfo.FLAG_SYSTEM) != 0) continue
-                val name = pm.getApplicationLabel(info).toString()
-                appList.add(info.packageName to name)
-            }
-            appList.sortBy { it.second }
-            
-            val items = appList.map { (pkg, name) ->
-                val isInList = freezeList.contains(pkg)
-                "${if (isInList) "✓ " else "  "}$name"
-            }.toTypedArray()
-            
-            android.app.AlertDialog.Builder(activity)
-                .setTitle("冻结列表管理\n(点击切换)")
-                .setItems(items) { _, which ->
-                    try {
-                        val (pkg, name) = appList[which]
-                        if (freezeList.contains(pkg)) {
-                            removeFromFreezeList(pkg)
-                            Toast.makeText(context, "已从冻结列表移除: $name", Toast.LENGTH_SHORT).show()
-                        } else {
-                            addToFreezeList(pkg)
-                            Toast.makeText(context, "已添加到冻结列表: $name", Toast.LENGTH_SHORT).show()
-                        }
-                        showFreezeManagementDialog(activity)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Freeze management item click error", e)
-                        Toast.makeText(context, "操作失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                .setNegativeButton("关闭") { _, _ -> currentActivityRef = null }
-                .setOnDismissListener { currentActivityRef = null }
-                .show()
-                
-        } catch (e: Exception) {
-            Log.e(TAG, "showFreezeManagementDialog error", e)
-            Toast.makeText(context, "打开失败: ${e.message}", Toast.LENGTH_SHORT).show()
+    try {
+        currentActivityRef = WeakReference(activity)
+        val freezeList = getFreezeList()
+        val pm = context.packageManager
+        val appList = mutableListOf<Pair<String, String>>()
+
+        val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+        for (info in apps) {
+            if (info.packageName == context.packageName) continue
+            if ((info.flags and ApplicationInfo.FLAG_SYSTEM) != 0) continue
+            val name = pm.getApplicationLabel(info).toString()
+            appList.add(info.packageName to name)
         }
+        appList.sortBy { it.second }
+
+        val recyclerView = RecyclerView(activity).apply {
+            layoutManager = LinearLayoutManager(activity)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (400 * activity.resources.displayMetrics.density).toInt()
+            )
+        }
+        
+        // ========== 先声明 adapter 为可变变量 ==========
+        var adapter: FreezeListAdapter? = null
+        
+        adapter = FreezeListAdapter(
+            context = context,
+            appList = appList,
+            freezeList = freezeList,
+            onItemClick = { pkg, name, isInList ->
+                if (isInList) {
+                    removeFromFreezeList(pkg)
+                    Toast.makeText(context, "已从冻结列表移除: $name", Toast.LENGTH_SHORT).show()
+                } else {
+                    addToFreezeList(pkg)
+                    Toast.makeText(context, "已添加到冻结列表: $name", Toast.LENGTH_SHORT).show()
+                }
+                // 使用 adapter 引用
+                adapter?.updateFreezeList(getFreezeList())
+            }
+        )
+        
+        recyclerView.adapter = adapter
+
+        android.app.AlertDialog.Builder(activity)
+            .setTitle("冻结列表管理\n(点击 切换)")
+            .setView(recyclerView)
+            .setNegativeButton("关闭") { _, _ -> currentActivityRef = null }
+            .setOnDismissListener { currentActivityRef = null }
+            .show()
+
+    } catch (e: Exception) {
+        Log.e(TAG, "showFreezeManagementDialog error", e)
+        Toast.makeText(context, "打开失败: ${e.message}", Toast.LENGTH_SHORT).show()
     }
+}
 
     fun showHiddenManagementDialog(activity: Activity) {
         try {
@@ -1074,4 +1136,45 @@ class WorkbenchManager(
             Log.e(TAG, "Cleanup error", e)
         }
     }
+    class FreezeListAdapter(
+    private val context: Context,
+    private val appList: List<Pair<String, String>>,
+    private var freezeList: List<String>,
+    private val onItemClick: (String, String, Boolean) -> Unit
+) : RecyclerView.Adapter<FreezeListAdapter.ViewHolder>() {
+
+    class ViewHolder(val container: LinearLayout, val textView: TextView) : RecyclerView.ViewHolder(container)
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(24, 14, 24, 14)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val textView = TextView(context).apply {
+            textSize = 14f
+            setTextColor(Color.WHITE)
+        }
+        container.addView(textView)
+        return ViewHolder(container, textView)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val (pkg, name) = appList[position]
+        val isInList = freezeList.contains(pkg)
+        holder.textView.text = "${if (isInList) "✓ " else "  "}$name"
+        holder.textView.setTextColor(if (isInList) Color.parseColor("#FF4CAF50") else Color.WHITE)
+        
+        holder.container.setOnClickListener {
+            onItemClick(pkg, name, isInList)
+        }
+    }
+
+    override fun getItemCount(): Int = appList.size
+
+    fun updateFreezeList(newList: List<String>) {
+        freezeList = newList
+        notifyDataSetChanged()
+    }
+}
 }
