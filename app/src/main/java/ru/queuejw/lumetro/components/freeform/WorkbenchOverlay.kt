@@ -93,6 +93,10 @@ class WorkbenchOverlay(
     private var isContainerInitialized = false
 
     private var isAppsPanelShowing = false
+    
+    private var touchDownX = 0f
+private var touchDownY = 0f
+
     private val cachedApps = mutableListOf<App>()
 
     private val MAX_SLOTS = 7
@@ -120,6 +124,127 @@ class WorkbenchOverlay(
     private var longPressDownY = 0f
     private var isLongPressTriggered = false
     private val handler = Handler(Looper.getMainLooper())
+    
+    private var lockOverlayView: View? = null
+private var lockOverlayParams: WindowManager.LayoutParams? = null
+private var isLockOverlayShowing = false
+private var lockTotalDistance = 0f
+private var lockLastX = 0f
+private var lockLastY = 0f
+
+private fun showLockOverlay() {
+    if (isLockOverlayShowing) return
+    
+    val density = context.resources.displayMetrics.density
+    val screenHeight = context.resources.displayMetrics.heightPixels
+    
+    val rootView = FrameLayout(context).apply {
+        setBackgroundColor(Color.TRANSPARENT)
+        isFocusable = true
+        isFocusableInTouchMode = true
+        isClickable = true
+        
+        setOnTouchListener { _, event ->
+            handleLockTouch(event)
+            true
+        }
+    }
+    
+    val hintText = TextView(context).apply {
+        text = "已锁定，关闭屏幕可解除"
+        textSize = 20f  // 20sp
+        setTextColor(Color.argb(180, 128, 0, 32))
+        gravity = Gravity.CENTER
+        includeFontPadding = false  // 移除额外内边距
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT  // 使用WRAP_CONTENT自动适应文字
+        ).apply {
+            gravity = Gravity.BOTTOM
+            bottomMargin = (15 * density).toInt()  // 上移15dp
+        }
+    }
+    rootView.addView(hintText)
+    
+    val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+    } else {
+        WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+    }
+    
+    val params = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.MATCH_PARENT,
+        windowType,
+        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+        PixelFormat.TRANSLUCENT
+    ).apply {
+        gravity = Gravity.TOP or Gravity.START
+        x = 0
+        y = 0
+    }
+    
+    try {
+        windowManager.addView(rootView, params)
+        lockOverlayView = rootView
+        lockOverlayParams = params
+        isLockOverlayShowing = true
+    } catch (e: Exception) {
+        Log.e(TAG, "showLockOverlay failed", e)
+    }
+}
+
+private fun handleLockTouch(event: MotionEvent) {
+    val density = context.resources.displayMetrics.density
+    val unlockThreshold = 500f * density
+    
+    when (event.action) {
+        MotionEvent.ACTION_DOWN -> {
+            lockLastX = event.x
+            lockLastY = event.y
+            lockTotalDistance = 0f
+        }
+        MotionEvent.ACTION_MOVE -> {
+            val dx = event.x - lockLastX
+            val dy = event.y - lockLastY
+            lockTotalDistance += sqrt(dx * dx + dy * dy)
+            lockLastX = event.x
+            lockLastY = event.y
+            
+            if (lockTotalDistance > unlockThreshold) {
+                hideLockOverlay()
+            }
+        }
+        MotionEvent.ACTION_UP -> {
+            if (lockTotalDistance > unlockThreshold) {
+                hideLockOverlay()
+            }
+        }
+    }
+}
+
+private fun hideLockOverlay() {
+    if (!isLockOverlayShowing) return
+    
+    try {
+        lockOverlayView?.let { view ->
+            windowManager.removeView(view)
+        }
+    } catch (e: Exception) {
+    }
+    
+    lockOverlayView = null
+    lockOverlayParams = null
+    isLockOverlayShowing = false
+    
+    // 解锁后恢复工作台
+    if (!isShowing) {
+        show()
+    }
+}
 
     private val screenStateReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -167,13 +292,13 @@ class WorkbenchOverlay(
 
     private fun hideWorkbenchOnScreenOff() {
     try {
+        hideLockOverlay()  // 解锁
+        
         val view = overlayViewRef?.get()
         if (view != null && isShowing) {
-            // 只隐藏内容，不移除视图
-            view.visibility = View.GONE
-            isShowing = false
-            perfLog("hideWorkbenchOnScreenOff: workbench hidden (GONE)")
+            windowManager.removeView(view)
         }
+        isShowing = false
     } catch (e: Exception) {
         Log.e(TAG, "hideWorkbenchOnScreenOff failed", e)
     }
@@ -182,81 +307,121 @@ class WorkbenchOverlay(
 private fun restoreWorkbenchOnScreenOn() {
     try {
         val view = overlayViewRef?.get()
-        if (view != null) {
-            // 恢复可见
-            view.visibility = View.VISIBLE
+        val params = workbenchParams
+        
+        if (view != null && params != null && view.parent == null) {
+            windowManager.addView(view, params)
             isShowing = true
-            perfLog("restoreWorkbenchOnScreenOn: workbench visible instantly")
         } else {
             show()
         }
     } catch (e: Exception) {
-        Log.e(TAG, "restoreWorkbenchOnScreenOn failed", e)
         show()
     }
 }
 
-    private fun preCreateAppListPanel() {
-        perfLog("preCreateAppListPanel START")
-        val startTime = System.currentTimeMillis()
-        
-        preCreateJob?.cancel()
-        preCreateJob = coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val apps = manager.getCachedApps()
-                cachedApps.clear()
-                cachedApps.addAll(apps)
-                cachedAppsHash = apps.hashCode()
-                perfLog("preCreateAppListPanel: got ${apps.size} apps in ${System.currentTimeMillis() - startTime}ms")
-                
-                val createStart = System.currentTimeMillis()
-                val loader = iconLoader ?: IconLoader(false, null)
-                val panel = AppListPanel(
-                    context = context,
-                    iconLoader = loader,
-                    coroutineScope = coroutineScope,
-                    onHidePanel = { hideAppsList() },
-                    onRefreshTiles = {},
-                    onShowSettings = {
-                        try {
-                            val intent = Intent(context, WorkbenchSettingsActivity::class.java)
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            context.startActivity(intent)
-                            hideAppsList()
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onShowFreezeDialog = {},
-                    onPinApp = {},
-                    onRefreshApps = {},
-                    onAppsChanged = { apps ->
-                        // 更新搜索列表，不影响第一行
-                        updateSearchSlots(apps)
+   private fun preCreateAppListPanel() {
+    perfLog("preCreateAppListPanel START")
+    val startTime = System.currentTimeMillis()
+    
+    preCreateJob?.cancel()
+    preCreateJob = coroutineScope.launch(Dispatchers.IO) {
+        try {
+            val apps = manager.getCachedApps()
+            cachedApps.clear()
+            cachedApps.addAll(apps)
+            cachedAppsHash = apps.hashCode()
+            perfLog("preCreateAppListPanel: got ${apps.size} apps in ${System.currentTimeMillis() - startTime}ms")
+            
+            val createStart = System.currentTimeMillis()
+            val loader = iconLoader ?: IconLoader(false, null)
+            val panel = AppListPanel(
+                context = context,
+                iconLoader = loader,
+                coroutineScope = coroutineScope,
+                onHidePanel = { hideAppsList() },
+                onRefreshTiles = {},
+                onShowSettings = {
+                    try {
+                        val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                        hideAppsList()
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
                     }
-                )
-                
-                val view = panel.createView()
-                perfLog("preCreateAppListPanel: created view in ${System.currentTimeMillis() - createStart}ms")
-                
-                val loadStart = System.currentTimeMillis()
-                panel.loadApps(apps)
-                perfLog("preCreateAppListPanel: loaded data in ${System.currentTimeMillis() - loadStart}ms")
-                
-                withContext(Dispatchers.Main) {
-                    preCreatedAppListPanel = panel
-                    preCreatedView = view
-                    isAppListReady = true
-                    val elapsed = System.currentTimeMillis() - startTime
-                    perfLog("preCreateAppListPanel END: total ${elapsed}ms")
-                    Log.d(TAG, "AppListPanel pre-created in ${elapsed}ms")
+                },
+                onShowFreezeDialog = {},
+                onPinApp = {},
+                onRefreshApps = {},
+                onAppsChanged = { apps ->
+                    updateSearchSlots(apps)
+                },
+                onPageChangeRequested = { direction ->
+                    if (direction > 0) {
+                        nextPage()
+                    } else {
+                        previousPage()
+                    }
+                },
+                onOpenNotificationCenter = {
+                    hideAppsList()
+                    try {
+                        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+                    } catch (e: Exception) {
+                        try {
+                            val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                            val method = statusBarService.javaClass.getMethod("expandNotificationsPanel")
+                            method.invoke(statusBarService)
+                        } catch (e2: Exception) {}
+                    }
+                },
+                onOpenControlCenter = {
+                    hideAppsList()
+                    try {
+                        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
+                    } catch (e: Exception) {
+                        try {
+                            val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                            val method = statusBarService.javaClass.getMethod("expandSettingsPanel")
+                            method.invoke(statusBarService)
+                        } catch (e2: Exception) {}
+                    }
+                },
+                onLockRequested = {
+    // 隐藏工作台
+    hide()
+    // 创建锁定图层
+    showLockOverlay()
+},
+                onUnlockRequested = {
+                    if (!isShowing) {
+                        show()
+                    }
                 }
-            } catch (e: Exception) {
-                perfLog("preCreateAppListPanel FAILED: ${e.message}")
-                Log.e(TAG, "Pre-create AppListPanel failed", e)
+            )
+            
+            val view = panel.createView()
+            perfLog("preCreateAppListPanel: created view in ${System.currentTimeMillis() - createStart}ms")
+            
+            val loadStart = System.currentTimeMillis()
+            panel.loadApps(apps)
+            perfLog("preCreateAppListPanel: loaded data in ${System.currentTimeMillis() - loadStart}ms")
+            
+            withContext(Dispatchers.Main) {
+                preCreatedAppListPanel = panel
+                preCreatedView = view
+                isAppListReady = true
+                val elapsed = System.currentTimeMillis() - startTime
+                perfLog("preCreateAppListPanel END: total ${elapsed}ms")
+                Log.d(TAG, "AppListPanel pre-created in ${elapsed}ms")
             }
+        } catch (e: Exception) {
+            perfLog("preCreateAppListPanel FAILED: ${e.message}")
+            Log.e(TAG, "Pre-create AppListPanel failed", e)
         }
     }
+}
 
     private suspend fun getAppsWithCache(): List<App> {
         val apps = manager.getCachedApps()
@@ -539,11 +704,16 @@ private fun initAppContainer() {
         return
     }
     
+    // ========== 确保工作台可见 ==========
+    if (!isShowing) {
+        show()
+    }
+    
     // 切换到搜索模式
     isSearchMode = true
     searchAppSlots.clear()
     
-    // 前6个是空白占位符
+    // 前6个是空白占位符（对应工作台第一行）
     for (i in 0 until 6) {
         searchAppSlots.add("" to "")
     }
@@ -555,18 +725,21 @@ private fun initAppContainer() {
         searchAppSlots.add(pkg to app.mName)
     }
     
+    // 合并显示
     mergeSlots()
-    currentPage = 1  // 跳到第二页
+    
+    // 跳到第二页（第7个图标）
+    currentPage = 1
     refreshAppSlots()
 
     if (cachedApps.isEmpty()) {
+        perfLog("showAppsList: cachedApps is empty, loading from manager")
         coroutineScope.launch(Dispatchers.IO) {
             val apps = manager.getCachedApps()
             cachedApps.clear()
             cachedApps.addAll(apps)
             cachedAppsHash = apps.hashCode()
             withContext(Dispatchers.Main) {
-                // ========== 递归调用时也确保 currentPage = 1 ==========
                 showAppsList()
             }
         }
@@ -578,6 +751,7 @@ private fun initAppContainer() {
         return
     }
 
+    perfLog("showAppsList: pre-created not ready, using fallback")
     showAppsListFallback()
 }
 
@@ -622,13 +796,25 @@ private fun initAppContainer() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_DOWN) {
-                    hideAppsList()
-                    true
-                } else {
-                    false
-                }
+    when (event.action) {
+        MotionEvent.ACTION_DOWN -> {
+            touchDownX = event.x
+            touchDownY = event.y
+            false
+        }
+        MotionEvent.ACTION_UP -> {
+            val dx = kotlin.math.abs(event.x - touchDownX)
+            val dy = kotlin.math.abs(event.y - touchDownY)
+            if (dx < 20f && dy < 20f) {
+                hideAppsList()
+                true
+            } else {
+                false
             }
+        }
+        else -> false
+    }
+}
             
             isFocusable = true
             isFocusableInTouchMode = true
@@ -723,163 +909,217 @@ private fun initAppContainer() {
 }
 
     private fun showAppsListFallback() {
-        val startTime = System.currentTimeMillis()
-        perfLog("showAppsListFallback START")
+    val startTime = System.currentTimeMillis()
+    perfLog("showAppsListFallback START")
+    
+    try {
+        if (cachedApps.isEmpty()) {
+            perfLog("showAppsListFallback: cachedApps is empty, loading...")
+            val apps = runBlocking { manager.getCachedApps() }
+            cachedApps.clear()
+            cachedApps.addAll(apps)
+            cachedAppsHash = apps.hashCode()
+            if (apps.isEmpty()) {
+                perfLog("showAppsListFallback: no apps loaded!")
+                Toast.makeText(context, "无法加载应用列表", Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
         
-        try {
-            if (cachedApps.isEmpty()) {
-                perfLog("showAppsListFallback: cachedApps is empty, loading...")
-                val apps = runBlocking { manager.getCachedApps() }
-                cachedApps.clear()
-                cachedApps.addAll(apps)
-                cachedAppsHash = apps.hashCode()
-                if (apps.isEmpty()) {
-                    perfLog("showAppsListFallback: no apps loaded!")
-                    Toast.makeText(context, "无法加载应用列表", Toast.LENGTH_SHORT).show()
-                    return
-                }
-            }
-            
-            val screenWidth = context.resources.displayMetrics.widthPixels
-            val screenHeight = context.resources.displayMetrics.heightPixels
-            
-            val widthRatio = settings.appListWidthRatio.coerceIn(0.7f, 0.95f)
-            val heightRatio = settings.appListHeightRatio.coerceIn(0.6f, 0.9f)
-            val verticalOffset = settings.appListVerticalOffset.coerceIn(-20, 20).dpToPx()
-            val cornerRadius = settings.appListCornerRadius.coerceIn(0, 30).dpToPx().toFloat()
-            val dimAlpha = settings.appListDimAlpha.coerceIn(0.1f, 0.7f)
-            
-            val appsWidth = (screenWidth * widthRatio).toInt()
-            val workbenchHeight = settings.height.dpToPx()
-            val availableHeight = screenHeight - workbenchHeight
-            val appsHeight = (availableHeight * heightRatio).toInt()
-            val topMargin = ((availableHeight - appsHeight) / 2) + verticalOffset
+        val screenWidth = context.resources.displayMetrics.widthPixels
+        val screenHeight = context.resources.displayMetrics.heightPixels
+        
+        val widthRatio = settings.appListWidthRatio.coerceIn(0.5f, 1.0f)
+        val heightRatio = settings.appListHeightRatio.coerceIn(0.1f, 2.0f)
+        val verticalOffset = settings.appListVerticalOffset.coerceIn(0, 400).dpToPx()
+        val cornerRadius = settings.appListCornerRadius.coerceIn(0, 50).dpToPx().toFloat()
+        val dimAlpha = settings.appListDimAlpha.coerceIn(0.0f, 0.9f)
+        
+        val appsWidth = (screenWidth * widthRatio).toInt()
+        val workbenchHeight = settings.height.dpToPx()
+        val availableHeight = screenHeight - workbenchHeight
+        val appsHeight = (availableHeight * heightRatio).toInt()
+        val topMargin = ((availableHeight - appsHeight) / 2) + verticalOffset
 
-            val rootContainer = FrameLayout(context).apply {
-                val alphaInt = (dimAlpha * 255).toInt()
-                setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                setOnTouchListener { _, event ->
-                    if (event.action == MotionEvent.ACTION_DOWN) {
-                        hideAppsList()
-                        true
-                    } else {
+        val rootContainer = FrameLayout(context).apply {
+            val alphaInt = (dimAlpha * 255).toInt()
+            setBackgroundColor(Color.argb(alphaInt, 0, 0, 0))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        touchDownX = event.x
+                        touchDownY = event.y
                         false
                     }
-                }
-                
-                isFocusable = true
-                isFocusableInTouchMode = true
-                requestFocus()
-                setOnKeyListener { _, keyCode, event ->
-                    if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                        perfLog("Back key pressed, hiding app list")
-                        hideAppsList()
-                        true
-                    } else {
-                        false
-                    }
-                }
-            }
-
-            val contentContainer = FrameLayout(context).apply {
-                setBackgroundColor(Color.BLACK)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    outlineProvider = object : android.view.ViewOutlineProvider() {
-                        override fun getOutline(view: View, outline: android.graphics.Outline) {
-                            outline.setRoundRect(0, 0, view.width, view.height, cornerRadius)
+                    MotionEvent.ACTION_UP -> {
+                        val dx = kotlin.math.abs(event.x - touchDownX)
+                        val dy = kotlin.math.abs(event.y - touchDownY)
+                        if (dx < 20f && dy < 20f) {
+                            hideAppsList()
+                            true
+                        } else {
+                            false
                         }
                     }
-                    clipToOutline = true
-                    elevation = 24f
+                    else -> false
                 }
             }
-
-            val contentParams = FrameLayout.LayoutParams(appsWidth, appsHeight)
-            contentParams.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            contentParams.topMargin = topMargin
-            contentContainer.layoutParams = contentParams
-
-            val createStart = System.currentTimeMillis()
-            val loader = iconLoader ?: IconLoader(false, null)
-            val panel = AppListPanel(
-                context = context,
-                iconLoader = loader,
-                coroutineScope = coroutineScope,
-                onHidePanel = { hideAppsList() },
-                onRefreshTiles = {},
-                onShowSettings = {
-                    try {
-                        val intent = Intent(context, WorkbenchSettingsActivity::class.java)
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                        hideAppsList()
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                onShowFreezeDialog = {},
-                onPinApp = {},
-                onRefreshApps = {},
-                onAppsChanged = { apps ->
-                    updateSearchSlots(apps)
+            
+            isFocusable = true
+            isFocusableInTouchMode = true
+            requestFocus()
+            setOnKeyListener { _, keyCode, event ->
+                if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                    perfLog("Back key pressed, hiding app list")
+                    hideAppsList()
+                    true
+                } else {
+                    false
                 }
-            )
-            preCreatedAppListPanel = panel
-
-            val view = panel.createView()
-            preCreatedView = view
-            perfLog("showAppsListFallback: created view in ${System.currentTimeMillis() - createStart}ms")
-            
-            contentContainer.addView(view)
-            view.setOnTouchListener { _, _ -> false }
-            
-            val loadStart = System.currentTimeMillis()
-            panel.loadApps(cachedApps)
-            perfLog("showAppsListFallback: loaded ${cachedApps.size} apps in ${System.currentTimeMillis() - loadStart}ms")
-
-            rootContainer.addView(contentContainer)
-
-            val windowType = getOverlayWindowType()
-
-            appsPanelParams = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                windowType,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = 0
-                y = 0
             }
-
-            appsPanelViewRef = WeakReference(rootContainer)
-            windowManager.addView(rootContainer, appsPanelParams)
-            isAppsPanelShowing = true
-            isAppListReady = true
-            
-            rootContainer.post {
-                rootContainer.requestFocus()
-            }
-
-            val elapsed = System.currentTimeMillis() - startTime
-            perfLog("showAppsListFallback END: ${elapsed}ms")
-            Log.d(TAG, "Fallback AppList shown in ${elapsed}ms")
-
-        } catch (e: Exception) {
-            perfLog("showAppsListFallback FAILED: ${e.message}")
-            Log.e(TAG, "showAppsListFallback failed", e)
-            Toast.makeText(context, "无法打开应用列表", Toast.LENGTH_SHORT).show()
         }
+
+        val contentContainer = FrameLayout(context).apply {
+            setBackgroundColor(Color.BLACK)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(view: View, outline: android.graphics.Outline) {
+                        outline.setRoundRect(0, 0, view.width, view.height, cornerRadius)
+                    }
+                }
+                clipToOutline = true
+                elevation = 24f
+            }
+        }
+
+        val contentParams = FrameLayout.LayoutParams(appsWidth, appsHeight)
+        contentParams.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        contentParams.topMargin = topMargin
+        contentContainer.layoutParams = contentParams
+
+        val createStart = System.currentTimeMillis()
+        val loader = iconLoader ?: IconLoader(false, null)
+        val panel = AppListPanel(
+            context = context,
+            iconLoader = loader,
+            coroutineScope = coroutineScope,
+            onHidePanel = { hideAppsList() },
+            onRefreshTiles = {},
+            onShowSettings = {
+                try {
+                    val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    hideAppsList()
+                } catch (e: Exception) {
+                    Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onShowFreezeDialog = {},
+            onPinApp = {},
+            onRefreshApps = {},
+            onAppsChanged = { apps ->
+                updateSearchSlots(apps)
+            },
+            onPageChangeRequested = { direction ->
+                if (direction > 0) {
+                    nextPage()
+                } else {
+                    previousPage()
+                }
+            },
+            onOpenNotificationCenter = {
+                hideAppsList()
+                try {
+                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+                } catch (e: Exception) {
+                    try {
+                        val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                        val method = statusBarService.javaClass.getMethod("expandNotificationsPanel")
+                        method.invoke(statusBarService)
+                    } catch (e2: Exception) {}
+                }
+            },
+            onOpenControlCenter = {
+                hideAppsList()
+                try {
+                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
+                } catch (e: Exception) {
+                    try {
+                        val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                        val method = statusBarService.javaClass.getMethod("expandSettingsPanel")
+                        method.invoke(statusBarService)
+                    } catch (e2: Exception) {}
+                }
+            },
+            onLockRequested = {
+    // 隐藏工作台
+    hide()
+    // 创建锁定图层
+    showLockOverlay()
+},
+            onUnlockRequested = {
+                if (!isShowing) {
+                    show()
+                }
+            }
+        )
+        preCreatedAppListPanel = panel
+
+        val view = panel.createView()
+        preCreatedView = view
+        perfLog("showAppsListFallback: created view in ${System.currentTimeMillis() - createStart}ms")
+        
+        contentContainer.addView(view)
+        view.setOnTouchListener { _, _ -> false }
+        
+        val loadStart = System.currentTimeMillis()
+        panel.loadApps(cachedApps)
+        perfLog("showAppsListFallback: loaded ${cachedApps.size} apps in ${System.currentTimeMillis() - loadStart}ms")
+
+        rootContainer.addView(contentContainer)
+
+        val windowType = getOverlayWindowType()
+
+        appsPanelParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            windowType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
+
+        appsPanelViewRef = WeakReference(rootContainer)
+        windowManager.addView(rootContainer, appsPanelParams)
+        isAppsPanelShowing = true
+        isAppListReady = true
+        
+        rootContainer.post {
+            rootContainer.requestFocus()
+        }
+
+        val elapsed = System.currentTimeMillis() - startTime
+        perfLog("showAppsListFallback END: ${elapsed}ms")
+        Log.d(TAG, "Fallback AppList shown in ${elapsed}ms")
+
+    } catch (e: Exception) {
+        perfLog("showAppsListFallback FAILED: ${e.message}")
+        Log.e(TAG, "showAppsListFallback failed", e)
+        Toast.makeText(context, "无法打开应用列表", Toast.LENGTH_SHORT).show()
     }
+}
 
     fun hideAppsList() {
     perfLog("hideAppsList")

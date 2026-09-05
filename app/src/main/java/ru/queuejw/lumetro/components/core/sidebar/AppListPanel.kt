@@ -1,6 +1,5 @@
 package ru.queuejw.lumetro.components.core.sidebar
 
-import android.view.MotionEvent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -8,14 +7,12 @@ import android.graphics.Color
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
 import kotlinx.coroutines.*
@@ -24,13 +21,11 @@ import net.sourceforge.pinyin4j.format.HanyuPinyinCaseType
 import net.sourceforge.pinyin4j.format.HanyuPinyinOutputFormat
 import net.sourceforge.pinyin4j.format.HanyuPinyinToneType
 import net.sourceforge.pinyin4j.format.HanyuPinyinVCharType
-import ru.queuejw.lumetro.components.core.AppManager
 import ru.queuejw.lumetro.components.core.icons.IconLoader
 import ru.queuejw.lumetro.components.freeze.FreezeManager
 import ru.queuejw.lumetro.components.freeze.ShizukuHelper
 import ru.queuejw.lumetro.components.freeform.WorkbenchManager
 import ru.queuejw.lumetro.components.freeform.WorkbenchSettingsActivity
-import ru.queuejw.lumetro.components.utils.PinYinStringHelper
 import ru.queuejw.lumetro.model.App
 import java.io.File
 import java.lang.ref.WeakReference
@@ -48,8 +43,12 @@ class AppListPanel(
     private val onShowFreezeDialog: () -> Unit,
     private val onPinApp: (App) -> Unit,
     private val onRefreshApps: () -> Unit,
-    // 对接工作台列表
-    private val onAppsChanged: (List<App>) -> Unit
+    private val onAppsChanged: (List<App>) -> Unit,
+    private val onPageChangeRequested: ((Int) -> Unit)? = null,
+    private val onOpenNotificationCenter: (() -> Unit)? = null,
+    private val onOpenControlCenter: (() -> Unit)? = null,
+    private val onLockRequested: (() -> Unit)? = null,
+    private val onUnlockRequested: (() -> Unit)? = null
 ) {
 
     private val perfLogEnabled = false
@@ -69,8 +68,8 @@ class AppListPanel(
         }
     }
 
-    private var searchEditTextRef: WeakReference<EditText>? = null
-    private var currentPopupRef: WeakReference<PopupWindow>? = null
+    private var searchEditTextRef: WeakReference<TextView>? = null
+    private var lockOverlay: LockOverlay? = null
     
     private var allApps = emptyList<App>()
     private val iconCache = mutableMapOf<String, Bitmap>()
@@ -80,9 +79,13 @@ class AppListPanel(
 
     private val searchHandler = Handler(Looper.getMainLooper())
     private var searchRunnable: Runnable? = null
+    
 
     private var t9Input = StringBuilder()
     private var isT9Mode = false
+
+    private val clearHandler = Handler(Looper.getMainLooper())
+    private var clearRunnable: Runnable? = null
 
     private val t9ReverseMap = mapOf(
         'A' to '2', 'B' to '2', 'C' to '2',
@@ -103,7 +106,6 @@ class AppListPanel(
         'w' to '9', 'x' to '9', 'y' to '9', 'z' to '9'
     )
 
-    // 多音字映射表
     private val polyphoneMap = mapOf(
         "行" to "hang", "重" to "chong", "长" to "chang",
         "朝" to "chao", "会" to "hui", "都" to "dou",
@@ -422,436 +424,330 @@ class AppListPanel(
         if (matchedApps.isEmpty()) {
             onAppsChanged(visibleApps.sortedBy { it.mName })
         } else {
-            onAppsChanged(matchedApps)  // 高分在底部
+            onAppsChanged(matchedApps)
         }
     }
 
     fun createView(): View {
-    val rootContainer = android.widget.FrameLayout(context).apply {
-        layoutParams = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-        setBackgroundColor(Color.parseColor("#FF2C2C2E"))
-    }
-    
-    val mainContent = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        layoutParams = android.widget.FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        )
-    }
-    
-    // ========== 搜索栏 ==========
-    val searchLayout = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
-        )
-        setPadding(6.dpToPx(), 6.dpToPx(), 6.dpToPx(), 6.dpToPx())
-    }
-    
-    val searchBar = EditText(context).apply {
-        hint = "九键搜索..."
-        setTextColor(Color.WHITE)
-        setHintTextColor(Color.parseColor("#FF6E6E73"))
-        setPadding(16.dpToPx(), 0, 16.dpToPx(), 0)
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = 6.dpToPx().toFloat()
-            setColor(Color.parseColor("#FF3A3A3C"))
-            setStroke(1, Color.parseColor("#FF48484A"))
+        val rootContainer = android.widget.FrameLayout(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(Color.parseColor("#FF1A1A1A"))
         }
-        textSize = 14f
-        isFocusable = false
-        isFocusableInTouchMode = false
-        isCursorVisible = false
-        isClickable = false
-        isLongClickable = false
-        setKeyListener(null)
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            36.dpToPx(),
-            1f
-        )
-        gravity = Gravity.CENTER_VERTICAL
-        setOnLongClickListener {
-            clearT9Input()
-            true
+        
+        val keyboardContainer = createKeyboardView()
+        rootContainer.addView(keyboardContainer)
+        
+        return rootContainer
+    }
+
+    private fun createKeyboardView(): View {
+        val container = GestureKeyboardContainer(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                200.dpToPx()
+            )
+            setBackgroundColor(Color.parseColor("#FF1A1A1A"))
+            setPadding(4.dpToPx(), 6.dpToPx(), 4.dpToPx(), 8.dpToPx())
+            gravity = Gravity.CENTER
+
+            onSwipeUp = { onPageChangeRequested?.invoke(1) }
+            onSwipeDown = { onPageChangeRequested?.invoke(-1) }
+        }
+
+        // 第一行：搜索显示 | 1 | 2ABC | 3DEF | 退格
+        val row1 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            gravity = Gravity.CENTER
+            setPadding(0, 2.dpToPx(), 0, 2.dpToPx())
+        }
+        row1.addView(createSearchDisplayKey())
+        row1.addView(createDigitKey("1", ""))
+        row1.addView(createKeyButton(keyData[0][1]))
+        row1.addView(createKeyButton(keyData[0][2]))
+        row1.addView(createSpecialKey("退格", isBackspace = true))
+        container.addView(row1)
+
+        // 第二行：设置 | 4GHI | 5JKL | 6MNO | 通知
+        val row2 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            gravity = Gravity.CENTER
+            setPadding(0, 2.dpToPx(), 0, 2.dpToPx())
+        }
+        row2.addView(createSettingsKey())
+        row2.addView(createKeyButton(keyData[1][0]))
+        row2.addView(createKeyButton(keyData[1][1]))
+        row2.addView(createKeyButton(keyData[1][2]))
+        row2.addView(createSpecialKey("通知", isNotificationCenter = true))
+        container.addView(row2)
+
+        // 第三行：锁定 | 7PQRS | 8TUV | 9WXYZ | 控制
+        val row3 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            gravity = Gravity.CENTER
+            setPadding(0, 2.dpToPx(), 0, 2.dpToPx())
+        }
+        row3.addView(createSpecialKey("锁定", isLockScreen = true))
+        row3.addView(createKeyButton(keyData[2][0]))
+        row3.addView(createKeyButton(keyData[2][1]))
+        row3.addView(createKeyButton(keyData[2][2]))
+        row3.addView(createSpecialKey("控制", isControlCenter = true))
+        container.addView(row3)
+
+        // 第四行：全部 | 未冻结 | 0 | 已冻结 | 清空
+        val row4 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+            gravity = Gravity.CENTER
+            setPadding(0, 4.dpToPx(), 0, 0)
+        }
+        row4.addView(createSpecialKey("全部", isShowAll = true))
+        row4.addView(createSpecialKey("未冻结", showUnfrozenApps = true))
+        row4.addView(createDigitKey("0", ""))
+        row4.addView(createSpecialKey("已冻结", showFrozenApps = true))
+        row4.addView(createSpecialKey("清空", isClearAll = true))
+        container.addView(row4)
+
+        return container
+    }
+
+    private fun createSearchDisplayKey(): View {
+        return TextView(context).apply {
+            text = ""
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
+                setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
+            }
+            background = createMacKeyBackground()
+            setOnLongClickListener { clearT9Input(); true }
+            searchEditTextRef = WeakReference(this)
         }
     }
-    searchLayout.addView(searchBar)
-    searchEditTextRef = WeakReference(searchBar)
-    
-    val settingsBtn = TextView(context).apply {
-        text = "⚙"
-        textSize = 16f
-        setTextColor(Color.parseColor("#FFEBEBF5"))
-        gravity = Gravity.CENTER
-        layoutParams = LinearLayout.LayoutParams(
-            36.dpToPx(),
-            36.dpToPx()
-        ).apply {
-            marginStart = 6.dpToPx()
-        }
-        background = createMacKeyBackground()
-        setOnClickListener {
-            try {
-                onShowSettings()
-            } catch (e: Exception) {
+
+    private fun createSettingsKey(): View {
+        return TextView(context).apply {
+            text = "⚙"
+            textSize = 14f
+            setTextColor(Color.parseColor("#FFEBEBF5"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
+                setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
+            }
+            background = createMacKeyBackground()
+            setOnClickListener {
                 try {
-                    val intent = Intent(context, WorkbenchSettingsActivity::class.java)
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                } catch (e2: Exception) {
-                    Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+                    onShowSettings()
+                } catch (e: Exception) {
+                    try {
+                        val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                    } catch (e2: Exception) {
+                        Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
     }
-    searchLayout.addView(settingsBtn)
-    
-    mainContent.addView(searchLayout)
-    
-    // ========== 九键键盘 ==========
-    val keyboardContainer = createKeyboardView()
-    mainContent.addView(keyboardContainer)
-    
-    rootContainer.addView(mainContent)
-    return rootContainer
-}
 
-/**
- * 创建 macOS 风格的按键背景
- */
-private fun createMacKeyBackground(): android.graphics.drawable.Drawable {
-    return android.graphics.drawable.GradientDrawable().apply {
-        shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-        cornerRadius = 8.dpToPx().toFloat()
-        colors = intArrayOf(
-            Color.parseColor("#FF48484A"),
-            Color.parseColor("#FF3A3A3C")
-        )
-        orientation = android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM
-        setStroke(1, Color.parseColor("#FF5E5E60"))
-    }
-}
-
-private fun createKeyRow(keys: List<KeyData>, isFirstRow: Boolean): LinearLayout {
-    val row = LinearLayout(context)
-    row.orientation = LinearLayout.HORIZONTAL
-    row.layoutParams = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        0,
-        1f
-    )
-    row.gravity = Gravity.CENTER
-    row.setPadding(0, 3.dpToPx(), 0, 3.dpToPx())
-
-    for (key in keys) {
-        val keyView = if (isFirstRow && key.label == "") {
-            createUnfrozenButton()
-        } else {
-            createKeyButton(key)
-        }
-        row.addView(keyView)
-    }
-
-    return row
-}
-
-private fun createUnfrozenButton(): View {
-    return TextView(context).apply {
-        text = "未冻结"
-        textSize = 13f
-        setTextColor(Color.parseColor("#FFEBEBF5"))
-        gravity = Gravity.CENTER
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            1f
-        ).apply {
-            setMargins(3.dpToPx(), 0, 3.dpToPx(), 0)
-        }
-        // macOS 按键背景
-        background = createMacKeyBackground()
-        setOnClickListener {
-            showUnfrozenApps()
-        }
-    }
-}
-
-private fun createKeyboardView(): View {
-    val container = LinearLayout(context).apply {
-        orientation = LinearLayout.VERTICAL
-        layoutParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            200.dpToPx()
-        )
-        setBackgroundColor(Color.parseColor("#FF2C2C2E"))
-        setPadding(6.dpToPx(), 8.dpToPx(), 6.dpToPx(), 10.dpToPx())
-        gravity = Gravity.CENTER
-    }
-
-    val row1 = createKeyRow(keyData[0], isFirstRow = true)
-    container.addView(row1)
-
-    val row2 = createKeyRow(keyData[1], isFirstRow = false)
-    container.addView(row2)
-
-    val row3 = createKeyRow(keyData[2], isFirstRow = false)
-    container.addView(row3)
-
-    val row4 = createActionRow()
-    container.addView(row4)
-
-    return container
-}
-
-private fun createKeyButton(key: KeyData): View {
-    val displayText = "${key.label} ${key.letters}"
-
-    return TextView(context).apply {
-        text = displayText
-        textSize = 14f
-        setTextColor(Color.parseColor("#FFEBEBF5"))
-        gravity = Gravity.CENTER
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            1f
-        ).apply {
-            setMargins(3.dpToPx(), 0, 3.dpToPx(), 0)
-        }
-        background = createMacKeyBackground()
-        setOnClickListener {
-            handleT9Input(key.label)
-        }
-    }
-}
-
-private fun createActionRow(): LinearLayout {
-    val row = LinearLayout(context)
-    row.orientation = LinearLayout.HORIZONTAL
-    row.layoutParams = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        0,
-        1f
-    )
-    row.gravity = Gravity.CENTER
-    row.setPadding(0, 4.dpToPx(), 0, 0)
-
-    val frozenBtn = TextView(context).apply {
-        text = "已冻结"
-        textSize = 13f
-        setTextColor(Color.parseColor("#FFEBEBF5"))
-        gravity = Gravity.CENTER
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            1f
-        ).apply {
-            setMargins(3.dpToPx(), 0, 3.dpToPx(), 0)
-        }
-        background = createMacKeyBackground()
-        setOnClickListener { showFrozenApps() }
-        setOnLongClickListener { performOneKeyFreeze(); true }
-    }
-    row.addView(frozenBtn)
-
-    val allBtn = TextView(context).apply {
-        text = "0 全部"
-        textSize = 13f
-        setTextColor(Color.parseColor("#FFEBEBF5"))
-        gravity = Gravity.CENTER
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            1.2f
-        ).apply {
-            setMargins(3.dpToPx(), 0, 3.dpToPx(), 0)
-        }
-        background = createMacKeyBackground()
-        setOnClickListener {
-            clearT9Input()
-            searchEditTextRef?.get()?.setText("")
-        }
-    }
-    row.addView(allBtn)
-
-    val clearBtn = TextView(context).apply {
-        text = "⌫"
-        textSize = 16f
-        setTextColor(Color.parseColor("#FFEBEBF5"))
-        gravity = Gravity.CENTER
-        layoutParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            1f
-        ).apply {
-            setMargins(3.dpToPx(), 0, 3.dpToPx(), 0)
-        }
-        background = createMacKeyBackground()
-        
-        setOnClickListener {
-    if (t9Input.isNotEmpty()) {
-        t9Input.deleteCharAt(t9Input.length - 1)
-        val input = t9Input.toString()
-        searchEditTextRef?.get()?.apply {
-            setText(input)  // 只显示数字
-            setSelection(text?.length ?: 0)
-        }
-        if (input.isEmpty()) {
-            isT9Mode = false
-            val visibleApps = getVisibleApps()
-            onAppsChanged(visibleApps.sortedBy { it.mName })
-        } else {
-            filterAppsByT9(input)
-        }
-    }
-}
-        
-        setOnLongClickListener {
-            startContinuousClear()
-            true
-        }
-        
-        setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    stopContinuousClear()
-                    false
+    private fun createSpecialKey(
+        label: String,
+        showUnfrozenApps: Boolean = false,
+        showFrozenApps: Boolean = false,
+        isBackspace: Boolean = false,
+        isShowAll: Boolean = false,
+        isClearAll: Boolean = false,
+        isNotificationCenter: Boolean = false,
+        isControlCenter: Boolean = false,
+        isLockScreen: Boolean = false
+    ): View {
+        return TextView(context).apply {
+            text = label
+            textSize = 11f
+            setTextColor(Color.parseColor("#FFEBEBF5"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
+                setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
+            }
+            background = createMacKeyBackground()
+            
+            setOnClickListener {
+                when {
+                    showUnfrozenApps -> showUnfrozenApps()
+                    showFrozenApps -> showFrozenApps()
+                    isBackspace -> handleBackspace()
+                    isShowAll -> { clearT9Input() }
+                    isClearAll -> { clearT9Input() }
+                    isNotificationCenter -> onOpenNotificationCenter?.invoke()
+                    isControlCenter -> onOpenControlCenter?.invoke()
+                    isLockScreen -> toggleLockScreen()
                 }
-                else -> false
+            }
+            
+            if (showFrozenApps) {
+                setOnLongClickListener { performOneKeyFreeze(); true }
+            }
+            
+            if (isBackspace) {
+                setOnLongClickListener { startContinuousClear(); true }
+                setOnTouchListener { _, event ->
+                    when (event.action) {
+                        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { stopContinuousClear(); false }
+                        else -> false
+                    }
+                }
             }
         }
     }
-    row.addView(clearBtn)
 
-    return row
+    private fun toggleLockScreen() {
+    if (lockOverlay?.isLocked() == true) {
+        lockOverlay?.unlock()
+        Toast.makeText(context, "已解锁", Toast.LENGTH_SHORT).show()
+    } else {
+        onHidePanel()
+        onLockRequested?.invoke()
+        Toast.makeText(context, "已锁定\n连续滑动500dp解锁", Toast.LENGTH_SHORT).show()
+    }
 }
 
+    fun unlockLockOverlay() {
+    lockOverlay?.unlock()
+    // onUnlocked 回调会自动触发 onUnlockRequested
+}
 
+    private fun createDigitKey(digit: String, letters: String): View {
+        return TextView(context).apply {
+            text = if (letters.isEmpty()) digit else "$digit $letters"
+            textSize = 14f
+            setTextColor(Color.parseColor("#FFEBEBF5"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
+            }
+            background = createMacKeyBackground()
+            setOnClickListener { handleT9Input(digit) }
+        }
+    }
 
-/**
- * 搜索栏也改为 macOS 风格
- */
-private fun createSearchBar(): EditText {
-    return EditText(context).apply {
-        hint = "九键搜索..."
-        setTextColor(Color.WHITE)
-        setHintTextColor(Color.parseColor("#FF6E6E73"))
-        setPadding(16.dpToPx(), 8.dpToPx(), 16.dpToPx(), 8.dpToPx())
-        // 简洁的搜索栏背景
-        background = android.graphics.drawable.GradientDrawable().apply {
+    private fun createKeyButton(key: KeyData): View {
+        return TextView(context).apply {
+            text = "${key.label} ${key.letters}"
+            textSize = 14f
+            setTextColor(Color.parseColor("#FFEBEBF5"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
+            }
+            background = createMacKeyBackground()
+            setOnClickListener { handleT9Input(key.label) }
+        }
+    }
+
+    private fun createMacKeyBackground(): android.graphics.drawable.Drawable {
+        return android.graphics.drawable.GradientDrawable().apply {
             shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = 6.dpToPx().toFloat()
-            setColor(Color.parseColor("#FF3A3A3C"))
-            setStroke(1, Color.parseColor("#FF48484A"))
-        }
-        textSize = 14f
-        isFocusable = false
-        isFocusableInTouchMode = false
-        isCursorVisible = false
-        isClickable = false
-        isLongClickable = false
-        setKeyListener(null)
-        layoutParams = LinearLayout.LayoutParams(
-            0, 
-            (36).dpToPx(),  // 固定高度，更紧凑
-            1f
-        )
-        gravity = Gravity.CENTER_VERTICAL
-        setOnLongClickListener {
-            clearT9Input()
-            true
+            cornerRadius = 8.dpToPx().toFloat()
+            colors = intArrayOf(
+                Color.parseColor("#FF2A2A2A"),
+                Color.parseColor("#FF1A1A1A")
+            )
+            orientation = android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM
+            setStroke(1, Color.parseColor("#FF333333"))
         }
     }
-}
-
-// 添加持续清除相关变量
-private val clearHandler = Handler(Looper.getMainLooper())
-private var clearRunnable: Runnable? = null
-
-/**
- * 开始持续清除
- */
-private fun startContinuousClear() {
-    stopContinuousClear()
-    val runnable = object : Runnable {
-        override fun run() {
-            if (t9Input.isNotEmpty()) {
-                t9Input.clear()
-                isT9Mode = false
-                searchEditTextRef?.get()?.setText("")
-                val visibleApps = getVisibleApps()
-                onAppsChanged(visibleApps.sortedBy { it.mName })
-            }
-            stopContinuousClear()
-        }
-    }
-    clearRunnable = runnable
-    clearHandler.postDelayed(runnable, 100)
-}
-
-/**
- * 停止持续清除
- */
-private fun stopContinuousClear() {
-    clearRunnable?.let { runnable ->
-        clearHandler.removeCallbacks(runnable)
-    }
-    clearRunnable = null
-}
 
     private fun handleT9Input(digit: String) {
-    t9Input.append(digit)
-    isT9Mode = true
-    val input = t9Input.toString()
-
-    searchEditTextRef?.get()?.apply {
-        setText(input)  // 只显示数字
-        setSelection(text?.length ?: 0)
+        t9Input.append(digit)
+        isT9Mode = true
+        val input = t9Input.toString()
+        searchEditTextRef?.get()?.text = input
+        filterAppsByT9(input)
     }
 
-    filterAppsByT9(input)
-}
+    private fun handleBackspace() {
+        if (t9Input.isNotEmpty()) {
+            t9Input.deleteCharAt(t9Input.length - 1)
+            val input = t9Input.toString()
+            searchEditTextRef?.get()?.text = input
+            if (input.isEmpty()) {
+                isT9Mode = false
+                val visibleApps = getVisibleApps()
+                onAppsChanged(visibleApps.sortedBy { it.mName })
+            } else {
+                filterAppsByT9(input)
+            }
+        }
+    }
+
+    private fun startContinuousClear() {
+        stopContinuousClear()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (t9Input.isNotEmpty()) {
+                    t9Input.clear()
+                    isT9Mode = false
+                    searchEditTextRef?.get()?.text = ""
+                    val visibleApps = getVisibleApps()
+                    onAppsChanged(visibleApps.sortedBy { it.mName })
+                }
+                stopContinuousClear()
+            }
+        }
+        clearRunnable = runnable
+        clearHandler.postDelayed(runnable, 300)
+    }
+
+    private fun stopContinuousClear() {
+        clearRunnable?.let { runnable ->
+            clearHandler.removeCallbacks(runnable)
+        }
+        clearRunnable = null
+    }
 
     fun clearT9Input() {
-    t9Input.clear()
-    isT9Mode = false
-    searchEditTextRef?.get()?.setText("")
-    val visibleApps = getVisibleApps()
-    onAppsChanged(visibleApps.sortedBy { it.mName })
-}
+        t9Input.clear()
+        isT9Mode = false
+        searchEditTextRef?.get()?.text = ""
+        val visibleApps = getVisibleApps()
+        onAppsChanged(visibleApps.sortedBy { it.mName })
+    }
 
-
-fun clearSearch() {
-    clearT9Input()
-    searchEditTextRef?.get()?.setText("")
-}
+    fun clearSearch() {
+        clearT9Input()
+        searchEditTextRef?.get()?.text = ""
+    }
 
     private fun showFrozenApps() {
-    // ========== 不清除T9输入，直接显示冻结列表 ==========
-    val visibleApps = getVisibleApps()
-    val frozenApps = visibleApps.filter { app ->
-        app.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
+        val visibleApps = getVisibleApps()
+        val frozenApps = visibleApps.filter { app ->
+            app.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
+        }
+        if (frozenApps.isEmpty()) {
+            Toast.makeText(context, "没有已冻结的应用", Toast.LENGTH_SHORT).show()
+            return
+        }
+        onAppsChanged(frozenApps.sortedBy { it.mName })
     }
-    onAppsChanged(frozenApps.sortedBy { it.mName })
-}
 
-private fun showUnfrozenApps() {
-    // ========== 不清除T9输入，直接显示未冻结列表 ==========
-    val visibleApps = getVisibleApps()
-    val unfrozenApps = visibleApps.filter { app ->
-        app.mPackage?.let { !FreezeManager.isFrozen(context, it) } ?: true
+    private fun showUnfrozenApps() {
+        val visibleApps = getVisibleApps()
+        val unfrozenApps = visibleApps.filter { app ->
+            app.mPackage?.let { !FreezeManager.isFrozen(context, it) } ?: true
+        }
+        if (unfrozenApps.isEmpty()) {
+            Toast.makeText(context, "没有未冻结的应用", Toast.LENGTH_SHORT).show()
+            return
+        }
+        onAppsChanged(unfrozenApps.sortedBy { it.mName })
     }
-    onAppsChanged(unfrozenApps.sortedBy { it.mName })
-}
-
 
     private fun performOneKeyFreeze() {
         val sh = ShizukuHelper.getInstance()
@@ -934,31 +830,20 @@ private fun showUnfrozenApps() {
     }
 
     fun clearResources() {
-    perfLog("clearResources")
-    searchHandler.removeCallbacksAndMessages(null)
-    searchRunnable = null
-    dismissPopup()
-    
-    loadIconJob?.cancel()
-    loadIconJob = null
-    loadDataJob?.cancel()
-    loadDataJob = null
-    
-    // ========== 停止持续清除 ==========
-    stopContinuousClear()
-    
-    pinyinCache.clear()
-    firstLetterIndex.clear()
-    fullPinyinIndex.clear()
-    namePrefixIndex.clear()
-    iconCache.clear()
-    clickHistory.clear()
-    t9Input.clear()
-}
-
-    private fun dismissPopup() {
-        currentPopupRef?.get()?.dismiss()
-        currentPopupRef = null
+        searchHandler.removeCallbacksAndMessages(null)
+        searchRunnable = null
+        loadIconJob?.cancel()
+        loadDataJob?.cancel()
+        stopContinuousClear()
+        lockOverlay?.unlock()
+        lockOverlay = null
+        pinyinCache.clear()
+        firstLetterIndex.clear()
+        fullPinyinIndex.clear()
+        namePrefixIndex.clear()
+        iconCache.clear()
+        clickHistory.clear()
+        t9Input.clear()
     }
 
     private fun Int.dpToPx(): Int {
