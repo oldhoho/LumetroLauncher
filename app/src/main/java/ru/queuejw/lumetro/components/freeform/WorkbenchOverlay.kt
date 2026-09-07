@@ -197,29 +197,27 @@ private fun showLockOverlay() {
     }
 }
 
+private var lockTouchStartY = 0f
+
 private fun handleLockTouch(event: MotionEvent) {
     val density = context.resources.displayMetrics.density
     val unlockThreshold = 500f * density
     
     when (event.action) {
         MotionEvent.ACTION_DOWN -> {
-            lockLastX = event.x
-            lockLastY = event.y
-            lockTotalDistance = 0f
+            lockTouchStartY = event.y
         }
         MotionEvent.ACTION_MOVE -> {
-            val dx = event.x - lockLastX
-            val dy = event.y - lockLastY
-            lockTotalDistance += sqrt(dx * dx + dy * dy)
-            lockLastX = event.x
-            lockLastY = event.y
+            // 单次向上滑动检测
+            val dy = lockTouchStartY - event.y  // 向上滑动dy>0
             
-            if (lockTotalDistance > unlockThreshold) {
+            if (dy > unlockThreshold) {
                 hideLockOverlay()
             }
         }
         MotionEvent.ACTION_UP -> {
-            if (lockTotalDistance > unlockThreshold) {
+            val dy = lockTouchStartY - event.y
+            if (dy > unlockThreshold) {
                 hideLockOverlay()
             }
         }
