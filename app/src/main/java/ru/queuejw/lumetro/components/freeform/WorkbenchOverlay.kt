@@ -244,6 +244,25 @@ private fun hideLockOverlay() {
     }
 }
 
+private val configChangeReceiver = object : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == Intent.ACTION_CONFIGURATION_CHANGED) {
+            handler.post {
+                val displayMetrics = context.resources.displayMetrics
+                if (displayMetrics.widthPixels > displayMetrics.heightPixels) {
+                    // 横屏：隐藏工作台和九键面板
+                    if (isShowing) {
+                        hide()
+                    }
+                    if (isAppsPanelShowing) {
+                        hideAppsList()
+                    }
+                }
+            }
+        }
+    }
+}
+
     private val screenStateReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -260,33 +279,35 @@ private fun hideLockOverlay() {
     }
 
     init {
-        perfLog("WorkbenchOverlay init START")
-        val initStart = System.currentTimeMillis()
-        
-        val filter = android.content.IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_OFF)
-            addAction(Intent.ACTION_USER_PRESENT)
-        }
-        try {
-            context.registerReceiver(screenStateReceiver, filter)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register receiver", e)
-        }
-
-        loadBlacklist()
-        initSlots()
-        initAppContainer()
-
-        try {
-            iconLoader?.getIconForPackage(context, context.packageName)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load icon", e)
-        }
-
-        perfLog("WorkbenchOverlay init END: ${System.currentTimeMillis() - initStart}ms")
-        
-        preCreateAppListPanel()
+    perfLog("WorkbenchOverlay init START")
+    val initStart = System.currentTimeMillis()
+    
+    val filter = android.content.IntentFilter().apply {
+        addAction(Intent.ACTION_SCREEN_OFF)
+        addAction(Intent.ACTION_USER_PRESENT)
+        addAction(Intent.ACTION_CONFIGURATION_CHANGED)  // 屏幕旋转
     }
+    try {
+        context.registerReceiver(screenStateReceiver, filter)
+        context.registerReceiver(configChangeReceiver, filter)
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to register receiver", e)
+    }
+
+    loadBlacklist()
+    initSlots()
+    initAppContainer()
+
+    try {
+        iconLoader?.getIconForPackage(context, context.packageName)
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to load icon", e)
+    }
+
+    perfLog("WorkbenchOverlay init END: ${System.currentTimeMillis() - initStart}ms")
+    
+    preCreateAppListPanel()
+}
 
     private fun hideWorkbenchOnScreenOff() {
     try {
@@ -565,70 +586,76 @@ private fun initAppContainer() {
 }
 
     fun show() {
-        if (isShowing) return
-        if (overlayViewRef?.get() != null) {
-            val view = overlayViewRef?.get()
-            val params = workbenchParams
-            if (view != null && params != null) {
-                try {
-                    windowManager.addView(view, params)
-                    isShowing = true
-                    perfLog("show: re-added existing view")
-                    return
-                } catch (e: Exception) {
-                    Log.e(TAG, "show: re-add failed", e)
-                    overlayViewRef = null
-                }
+    if (isShowing) return
+    
+    // ========== 横屏时自动隐藏，不显示工作台 ==========
+    val displayMetrics = context.resources.displayMetrics
+    if (displayMetrics.widthPixels > displayMetrics.heightPixels) {
+        perfLog("show: landscape mode, hiding workbench")
+        return
+    }
+    
+    if (overlayViewRef?.get() != null) {
+        val view = overlayViewRef?.get()
+        val params = workbenchParams
+        if (view != null && params != null) {
+            try {
+                windowManager.addView(view, params)
+                isShowing = true
+                perfLog("show: re-added existing view")
+                return
+            } catch (e: Exception) {
+                Log.e(TAG, "show: re-add failed", e)
+                overlayViewRef = null
             }
         }
-        if (isScreenOff) {
-            prepareViews()
-            return
-        }
-
-        currentPage = 0
-        activateFreeformMode()
-
-        val displayMetrics = context.resources.displayMetrics
-        val screenWidth = displayMetrics.widthPixels
-        val navBarHeight = getNavBarHeight()
-        barHeight = navBarHeight
-
-        val container = createWorkbenchView(screenWidth)
-        overlayViewRef = WeakReference(container)
-
-        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        } else {
-            WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
-        }
-
-        val workbenchHeight = settings.height.dpToPx()
-        workbenchParams = WindowManager.LayoutParams(
-            screenWidth,
-            workbenchHeight,
-            windowType,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.BOTTOM or Gravity.START
-            x = 0
-            y = 0
-        }
-
-        try {
-            windowManager.addView(container, workbenchParams)
-            isShowing = true
-        } catch (e: Exception) {
-            Log.e(TAG, "show failed", e)
-        }
-
-        updatePageIndicator()
     }
+    if (isScreenOff) {
+        prepareViews()
+        return
+    }
+
+    currentPage = 0
+    activateFreeformMode()
+
+    val navBarHeight = getNavBarHeight()
+    barHeight = navBarHeight
+
+    val container = createWorkbenchView(displayMetrics.widthPixels)
+    overlayViewRef = WeakReference(container)
+
+    val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+    } else {
+        WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+    }
+
+    val workbenchHeight = settings.height.dpToPx()
+    workbenchParams = WindowManager.LayoutParams(
+        displayMetrics.widthPixels,
+        workbenchHeight,
+        windowType,
+        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+        PixelFormat.TRANSLUCENT
+    ).apply {
+        gravity = Gravity.BOTTOM or Gravity.START
+        x = 0
+        y = 0
+    }
+
+    try {
+        windowManager.addView(container, workbenchParams)
+        isShowing = true
+    } catch (e: Exception) {
+        Log.e(TAG, "show failed", e)
+    }
+
+    updatePageIndicator()
+}
 
     fun hide() {
         if (isAppsPanelShowing) {
@@ -2127,21 +2154,22 @@ private fun initAppContainer() {
     }
 
     fun cleanup() {
-        perfLog("cleanup")
-        try {
-            context.unregisterReceiver(screenStateReceiver)
-        } catch (e: Exception) {
-            Log.e(TAG, "unregisterReceiver failed", e)
-        }
-        preCreateJob?.cancel()
-        preCreateJob = null
-        hide()
-        if (isAppsPanelShowing) {
-            preCreatedAppListPanel?.clearSearch()
-            hideAppsList()
-        }
-        handler.removeCallbacksAndMessages(null)
+    perfLog("cleanup")
+    try {
+        context.unregisterReceiver(screenStateReceiver)
+        context.unregisterReceiver(configChangeReceiver)
+    } catch (e: Exception) {
+        Log.e(TAG, "unregisterReceiver failed", e)
     }
+    preCreateJob?.cancel()
+    preCreateJob = null
+    hide()
+    if (isAppsPanelShowing) {
+        preCreatedAppListPanel?.clearSearch()
+        hideAppsList()
+    }
+    handler.removeCallbacksAndMessages(null)
+}
 
     private fun Int.dpToPx(): Int {
         return (this * context.resources.displayMetrics.density).toInt()
