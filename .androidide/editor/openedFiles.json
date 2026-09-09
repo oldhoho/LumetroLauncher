@@ -1,20 +1,35 @@
 {
   "allFiles": [
     {
+      "file": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/freeform/LandscapeWorkbenchOverlay.kt",
+      "selection": {
+        "end": {
+          "column": 5,
+          "index": 13665,
+          "line": 403
+        },
+        "start": {
+          "column": 5,
+          "index": 13665,
+          "line": 403
+        }
+      }
+    },
+    {
       "file": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/freeform/WorkbenchOverlay.kt",
       "selection": {
         "end": {
-          "column": 1,
-          "index": 77289,
-          "line": 2176
+          "column": 5,
+          "index": 5762,
+          "line": 158
         },
         "start": {
-          "column": 0,
-          "index": 0,
-          "line": 0
+          "column": 5,
+          "index": 5762,
+          "line": 158
         }
       }
     }
   ],
-  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/freeform/WorkbenchOverlay.kt"
+  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/LumetroLauncher/app/src/main/java/ru/queuejw/lumetro/components/freeform/LandscapeWorkbenchOverlay.kt"
 }

@@ -41,6 +41,7 @@ import java.lang.ref.WeakReference
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.content.BroadcastReceiver
 
 class WorkbenchOverlay(
     private val service: AccessibilityService,
@@ -93,6 +94,7 @@ class WorkbenchOverlay(
     private var isContainerInitialized = false
 
     private var isAppsPanelShowing = false
+    private var landscapeOverlay: LandscapeWorkbenchOverlay? = null
     
     private var touchDownX = 0f
 private var touchDownY = 0f
@@ -125,6 +127,7 @@ private var touchDownY = 0f
     private var isLongPressTriggered = false
     private val handler = Handler(Looper.getMainLooper())
     
+    
     private var lockOverlayView: View? = null
 private var lockOverlayParams: WindowManager.LayoutParams? = null
 private var isLockOverlayShowing = false
@@ -132,17 +135,35 @@ private var lockTotalDistance = 0f
 private var lockLastX = 0f
 private var lockLastY = 0f
 
+// ========== 竖屏锁定图层 ==========
+private var lockTouchStartX = 0f
+
 private fun showLockOverlay() {
     if (isLockOverlayShowing) return
-    
+
     val density = context.resources.displayMetrics.density
-    val screenHeight = context.resources.displayMetrics.heightPixels
+
+    val lockIcon = TextView(context).apply {
+        text = "🚫"
+        textSize = 20f  // 缩小
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.END  // 右下角
+            rightMargin = (16 * density).toInt()
+            bottomMargin = (16 * density).toInt()
+        }
+    }
     
     val rootView = FrameLayout(context).apply {
         setBackgroundColor(Color.TRANSPARENT)
         isFocusable = true
         isFocusableInTouchMode = true
         isClickable = true
+        addView(lockIcon)
         
         setOnTouchListener { _, event ->
             handleLockTouch(event)
@@ -150,29 +171,13 @@ private fun showLockOverlay() {
         }
     }
     
-    val hintText = TextView(context).apply {
-        text = "已锁定，关闭屏幕可解除"
-        textSize = 20f  // 20sp
-        setTextColor(Color.argb(180, 128, 0, 32))
-        gravity = Gravity.CENTER
-        includeFontPadding = false  // 移除额外内边距
-        layoutParams = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT  // 使用WRAP_CONTENT自动适应文字
-        ).apply {
-            gravity = Gravity.BOTTOM
-            bottomMargin = (15 * density).toInt()  // 上移15dp
-        }
-    }
-    rootView.addView(hintText)
-    
     val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
     } else {
         WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
     }
     
-    val params = WindowManager.LayoutParams(
+    lockOverlayParams = WindowManager.LayoutParams(
         WindowManager.LayoutParams.MATCH_PARENT,
         WindowManager.LayoutParams.MATCH_PARENT,
         windowType,
@@ -188,14 +193,27 @@ private fun showLockOverlay() {
     }
     
     try {
-        windowManager.addView(rootView, params)
+        windowManager.addView(rootView, lockOverlayParams)
         lockOverlayView = rootView
-        lockOverlayParams = params
         isLockOverlayShowing = true
     } catch (e: Exception) {
         Log.e(TAG, "showLockOverlay failed", e)
     }
 }
+
+fun hideLockOverlay() {
+    if (!isLockOverlayShowing) return
+    
+    try {
+        lockOverlayView?.let { windowManager.removeView(it) }
+    } catch (e: Exception) {}
+    
+    lockOverlayView = null
+    lockOverlayParams = null
+    isLockOverlayShowing = false
+}
+
+fun isLockShowing(): Boolean = isLockOverlayShowing
 
 private var lockTouchStartY = 0f
 
@@ -205,57 +223,80 @@ private fun handleLockTouch(event: MotionEvent) {
     
     when (event.action) {
         MotionEvent.ACTION_DOWN -> {
+            lockTouchStartX = event.x
             lockTouchStartY = event.y
         }
         MotionEvent.ACTION_MOVE -> {
-            // 单次向上滑动检测
-            val dy = lockTouchStartY - event.y  // 向上滑动dy>0
+            val horizontalDistance = kotlin.math.abs(event.x - lockTouchStartX)
+            val verticalDistance = kotlin.math.abs(event.y - lockTouchStartY)
             
-            if (dy > unlockThreshold) {
+            // 横滑或竖滑超过500dp都解锁
+            if (horizontalDistance > unlockThreshold || verticalDistance > unlockThreshold) {
                 hideLockOverlay()
             }
         }
         MotionEvent.ACTION_UP -> {
-            val dy = lockTouchStartY - event.y
-            if (dy > unlockThreshold) {
+            val horizontalDistance = kotlin.math.abs(event.x - lockTouchStartX)
+            val verticalDistance = kotlin.math.abs(event.y - lockTouchStartY)
+            
+            if (horizontalDistance > unlockThreshold || verticalDistance > unlockThreshold) {
                 hideLockOverlay()
             }
         }
     }
 }
 
-private fun hideLockOverlay() {
-    if (!isLockOverlayShowing) return
-    
-    try {
-        lockOverlayView?.let { view ->
-            windowManager.removeView(view)
+
+
+    private val screenStateReceiver = object : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (intent.action) {
+            Intent.ACTION_SCREEN_OFF -> {
+                isScreenOff = true
+                hideWorkbenchOnScreenOff()
+            }
+            Intent.ACTION_USER_PRESENT -> {
+                isScreenOff = false
+                restoreWorkbenchOnScreenOn()
+            }
         }
-    } catch (e: Exception) {
-    }
-    
-    lockOverlayView = null
-    lockOverlayParams = null
-    isLockOverlayShowing = false
-    
-    // 解锁后恢复工作台
-    if (!isShowing) {
-        show()
     }
 }
-
-private val configChangeReceiver = object : android.content.BroadcastReceiver() {
+private val configChangeReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_CONFIGURATION_CHANGED) {
             handler.post {
-                val displayMetrics = context.resources.displayMetrics
-                if (displayMetrics.widthPixels > displayMetrics.heightPixels) {
-                    // 横屏：隐藏工作台和九键面板
-                    if (isShowing) {
-                        hide()
+                val dm = context.resources.displayMetrics
+                val isLandscape = dm.widthPixels > dm.heightPixels
+                
+                // 记录旋转前是否有锁定
+                val hadLock = isLockOverlayShowing || (landscapeOverlay?.isLockShowing() == true)
+                
+                // 清除所有锁定
+                hideLockOverlay()
+                landscapeOverlay?.hideLockOverlay()
+                
+                if (hadLock) {
+                    // 旋转前有锁定，按新方向重新锁定
+                    if (isLandscape) {
+                        // 横屏锁定
+                        hide()  // 隐藏竖屏工作台
+                        landscapeOverlay?.show()
+                        landscapeOverlay?.showLockOverlay()
+                    } else {
+                        // 竖屏锁定
+                        landscapeOverlay?.hide()
+                        show()
+                        showLockOverlay()
                     }
-                    if (isAppsPanelShowing) {
-                        hideAppsList()
+                } else {
+                    // 旋转前无锁定，正常切换
+                    if (isLandscape) {
+                        hide()
+                        landscapeOverlay?.show()
+                    } else {
+                        landscapeOverlay?.hide()
+                        show()
                     }
                 }
             }
@@ -263,20 +304,7 @@ private val configChangeReceiver = object : android.content.BroadcastReceiver() 
     }
 }
 
-    private val screenStateReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                Intent.ACTION_SCREEN_OFF -> {
-                    isScreenOff = true
-                    hideWorkbenchOnScreenOff()
-                }
-                Intent.ACTION_USER_PRESENT -> {
-                    isScreenOff = false
-                    restoreWorkbenchOnScreenOn()
-                }
-            }
-        }
-    }
+
 
     init {
     perfLog("WorkbenchOverlay init START")
@@ -285,7 +313,7 @@ private val configChangeReceiver = object : android.content.BroadcastReceiver() 
     val filter = android.content.IntentFilter().apply {
         addAction(Intent.ACTION_SCREEN_OFF)
         addAction(Intent.ACTION_USER_PRESENT)
-        addAction(Intent.ACTION_CONFIGURATION_CHANGED)  // 屏幕旋转
+        addAction(Intent.ACTION_CONFIGURATION_CHANGED)
     }
     try {
         context.registerReceiver(screenStateReceiver, filter)
@@ -304,6 +332,8 @@ private val configChangeReceiver = object : android.content.BroadcastReceiver() 
         Log.e(TAG, "Failed to load icon", e)
     }
 
+    landscapeOverlay = LandscapeWorkbenchOverlay(service, manager)
+
     perfLog("WorkbenchOverlay init END: ${System.currentTimeMillis() - initStart}ms")
     
     preCreateAppListPanel()
@@ -311,7 +341,7 @@ private val configChangeReceiver = object : android.content.BroadcastReceiver() 
 
     private fun hideWorkbenchOnScreenOff() {
     try {
-        hideLockOverlay()  // 解锁
+        landscapeOverlay?.onScreenOff()
         
         val view = overlayViewRef?.get()
         if (view != null && isShowing) {
@@ -325,16 +355,23 @@ private val configChangeReceiver = object : android.content.BroadcastReceiver() 
 
 private fun restoreWorkbenchOnScreenOn() {
     try {
-        val view = overlayViewRef?.get()
-        val params = workbenchParams
-        
-        if (view != null && params != null && view.parent == null) {
-            windowManager.addView(view, params)
-            isShowing = true
+        val dm = context.resources.displayMetrics
+        if (dm.widthPixels > dm.heightPixels) {
+            // 横屏
+            landscapeOverlay?.onScreenOn()
         } else {
-            show()
+            // 竖屏
+            val view = overlayViewRef?.get()
+            val params = workbenchParams
+            if (view != null && params != null && view.parent == null) {
+                windowManager.addView(view, params)
+                isShowing = true
+            } else {
+                show()
+            }
         }
     } catch (e: Exception) {
+        Log.e(TAG, "restoreWorkbenchOnScreenOn failed", e)
         show()
     }
 }
@@ -2164,6 +2201,7 @@ private fun initAppContainer() {
     preCreateJob?.cancel()
     preCreateJob = null
     hide()
+    landscapeOverlay?.cleanup()
     if (isAppsPanelShowing) {
         preCreatedAppListPanel?.clearSearch()
         hideAppsList()
