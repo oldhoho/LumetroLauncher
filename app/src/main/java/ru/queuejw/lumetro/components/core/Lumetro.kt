@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.pm.PackageManager
 import android.util.Log
 import rikka.shizuku.Shizuku
+import ru.queuejw.lumetro.components.freeform.util.CrashLogger
 
 class Lumetro : Application() {
 
@@ -16,7 +17,15 @@ class Lumetro : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        
+
+        // ========== 安装崩溃日志捕获 ==========
+        try {
+            CrashLogger.install(this)
+        } catch (e: Exception) {
+            Log.e(TAG, "CrashLogger install failed", e)
+        }
+        // =====================================
+
         try {
             // 检查 Shizuku 是否可用
             if (Shizuku.pingBinder()) {

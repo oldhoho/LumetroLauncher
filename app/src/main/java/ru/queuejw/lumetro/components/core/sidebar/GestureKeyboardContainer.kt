@@ -10,8 +10,7 @@ class GestureKeyboardContainer(context: Context) : LinearLayout(context) {
     private var touchStartX = 0f
     private var isSwiping = false
     private var hasTriggeredSwipe = false
-    private val SWIPE_THRESHOLD = 30f
-    private val MAX_CLICK_MOVEMENT = 15f
+    private val SWIPE_THRESHOLD = 80f  // 增大阈值
 
     var onSwipeUp: (() -> Unit)? = null
     var onSwipeDown: (() -> Unit)? = null
@@ -20,46 +19,30 @@ class GestureKeyboardContainer(context: Context) : LinearLayout(context) {
         orientation = LinearLayout.VERTICAL
     }
 
-    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         when (ev.action) {
             MotionEvent.ACTION_DOWN -> {
                 touchStartY = ev.y
                 touchStartX = ev.x
                 isSwiping = false
                 hasTriggeredSwipe = false
+                // 不消费 DOWN，让子View处理（长按/点击）
+                super.dispatchTouchEvent(ev)
+                return true
             }
             MotionEvent.ACTION_MOVE -> {
                 val dy = ev.y - touchStartY
                 val dx = ev.x - touchStartX
-                
-                // ========== 增大角度容忍：只要垂直分量大于水平分量的一半即可 ==========
-                // 之前：abs(dy) > abs(dx) * 1.5f（约56度以上）
-                // 现在：abs(dy) > abs(dx) * 0.5f（约26度以上都能触发）
+
                 if (abs(dy) > SWIPE_THRESHOLD && abs(dy) > abs(dx) * 0.5f) {
                     isSwiping = true
-                    return true
                 }
-            }
-            MotionEvent.ACTION_UP -> {
-                if (isSwiping) {
-                    isSwiping = false
-                    return true
-                }
-            }
-        }
-        return super.onInterceptTouchEvent(ev)
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.action) {
-            MotionEvent.ACTION_MOVE -> {
-                if (isSwiping) {
-                    return true
-                }
+                // 无论是否滑动，都传给子View处理
+                return super.dispatchTouchEvent(ev)
             }
             MotionEvent.ACTION_UP -> {
                 if (isSwiping && !hasTriggeredSwipe) {
-                    val totalDy = event.y - touchStartY
+                    val totalDy = ev.y - touchStartY
                     if (totalDy > SWIPE_THRESHOLD) {
                         onSwipeDown?.invoke()
                         hasTriggeredSwipe = true
@@ -67,16 +50,18 @@ class GestureKeyboardContainer(context: Context) : LinearLayout(context) {
                         onSwipeUp?.invoke()
                         hasTriggeredSwipe = true
                     }
-                    isSwiping = false
-                    return true
                 }
                 isSwiping = false
+                super.dispatchTouchEvent(ev)
+                return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 isSwiping = false
                 hasTriggeredSwipe = false
+                super.dispatchTouchEvent(ev)
+                return true
             }
         }
-        return super.onTouchEvent(event)
+        return super.dispatchTouchEvent(ev)
     }
 }
