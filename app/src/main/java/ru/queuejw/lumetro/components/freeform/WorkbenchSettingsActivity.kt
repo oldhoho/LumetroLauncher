@@ -261,14 +261,7 @@ class WorkbenchSettingsActivity : AppCompatActivity() {
         // ========== 磁贴面板禁用开关 ==========
         switchTilesPanel.setOnCheckedChangeListener { _, isChecked ->
             settings.tilesPanelEnabled = isChecked
-            if (isChecked) {
-                SidebarAccessibilityService.sidebarManager?.createGestureStrip()
-                Toast.makeText(this, "磁贴面板已启用", Toast.LENGTH_SHORT).show()
-            } else {
-                SidebarAccessibilityService.sidebarManager?.destroyGestureStrip()
-                SidebarAccessibilityService.sidebarManager?.hidePanelImmediately()
-                Toast.makeText(this, "磁贴面板已禁用", Toast.LENGTH_SHORT).show()
-            }
+            Toast.makeText(this, if (isChecked) "磁贴面板已启用" else "磁贴面板已禁用", Toast.LENGTH_SHORT).show()
         }
 
         // ========== 按钮监听器 ==========
@@ -359,12 +352,6 @@ class WorkbenchSettingsActivity : AppCompatActivity() {
 
             // ========== 磁贴面板开关 ==========
             settings.tilesPanelEnabled = switchTilesPanel.isChecked
-            if (!switchTilesPanel.isChecked) {
-                SidebarAccessibilityService.sidebarManager?.destroyGestureStrip()
-                SidebarAccessibilityService.sidebarManager?.hidePanelImmediately()
-            } else {
-                SidebarAccessibilityService.sidebarManager?.createGestureStrip()
-            }
 
             if (settings.enabled) {
                 WorkbenchManager.showWorkbench()

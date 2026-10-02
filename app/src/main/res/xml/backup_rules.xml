@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
     <include domain="sharedpref" path="workbench_settings.xml" />
+    <include domain="sharedpref" path="workbench.xml" />
+    <include domain="sharedpref" path="settings.xml" />
+    <include domain="sharedpref" path="freeze.xml" />
+    <include domain="sharedpref" path="keyboard_bindings.xml" />
+    <include domain="sharedpref" path="app_click_history.xml" />
+    <include domain="sharedpref" path="dim_overlay.xml" />
+    <include domain="sharedpref" path="tile_custom_icons.xml" />
 </full-backup-content>

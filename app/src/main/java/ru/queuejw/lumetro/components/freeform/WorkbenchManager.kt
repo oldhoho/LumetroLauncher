@@ -35,51 +35,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class FreezeListAdapter(
-    private val context: Context,
-    private val appList: List<Pair<String, String>>,
-    private var freezeList: Set<String>,
-    private val onItemClick: (String, String, Boolean) -> Unit
-) : RecyclerView.Adapter<FreezeListAdapter.ViewHolder>() {
-
-    class ViewHolder(val container: LinearLayout, val textView: TextView) : RecyclerView.ViewHolder(container)
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val container = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(20.dpToPx(), 12.dpToPx(), 20.dpToPx(), 12.dpToPx())
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val textView = TextView(context).apply {
-            textSize = 14f
-            setTextColor(Color.WHITE)
-        }
-        container.addView(textView)
-        return ViewHolder(container, textView)
-    }
-
-    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val (pkg, name) = appList[position]
-        val isInList = freezeList.contains(pkg)
-        holder.textView.text = "${if (isInList) "✓ " else "  "}$name"
-        holder.textView.setTextColor(if (isInList) Color.parseColor("#FF4CAF50") else Color.WHITE)
-        
-        holder.container.setOnClickListener {
-            onItemClick(pkg, name, isInList)
-        }
-    }
-
-    override fun getItemCount(): Int = appList.size
-
-    fun updateFreezeList(newList: Set<String>) {
-        freezeList = newList
-        // 只刷新可见项
-        notifyDataSetChanged()
-    }
-
-    private fun Int.dpToPx(): Int = (this * context.resources.displayMetrics.density).toInt()
-}
-
 class WorkbenchManager(
     private val context: Context,
     private val accessibilityService: AccessibilityService
