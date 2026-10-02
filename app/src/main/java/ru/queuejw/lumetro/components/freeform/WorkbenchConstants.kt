@@ -13,7 +13,7 @@ object WorkbenchConstants {
     // ========== 应用列表 ==========
     const val MAX_SLOTS = 7
     const val MAX_APPS = 50
-    const val ITEMS_PER_PAGE = 7
+    const val ITEMS_PER_PAGE = 6
 
     // ========== 手势 ==========
     const val GESTURE_STRIP_WIDTH_DP = 6

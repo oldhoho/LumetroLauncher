@@ -49,6 +49,7 @@ class ShizukuHelper private constructor() {
 
     private fun initReflection() {
         try {
+            ru.queuejw.lumetro.components.freeform.util.U.allowReflection()
             val ipmStub = Class.forName("android.content.pm.IPackageManager\$Stub")
             val asInterfaceMethod = ipmStub.getMethod("asInterface", IBinder::class.java)
             val binder = SystemServiceHelper.getSystemService("package")

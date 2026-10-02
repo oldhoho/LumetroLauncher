@@ -142,7 +142,7 @@
             android:textSize="18sp" />
 
         <ru.queuejw.lumetro.components.ui.metro.MetroSwitch
-            android:id="@+id/auto_pin_apps_switch" />
+            android:id="@+id/auto_pin_apps_switch"
             style="@style/Metro.Switch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content" />

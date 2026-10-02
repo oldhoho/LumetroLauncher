@@ -2308,10 +2308,11 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
                         }
                     }
 
+                    val wasLongPress = isLongPressTriggered
                     isLongPressTriggered = false
                     longPressPackage = ""
                     longPressName = ""
-                    false
+                    wasLongPress
                 }
 
                 else -> false

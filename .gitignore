@@ -14,3 +14,15 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 补充：编辑器与构建临时文件
+.kotlin
+.acside
+*.bak
+*.bak_*
+*.bak[0-9]
+*.orig
+*.rej
+*~
+*.swp
+*.tmp
