@@ -1,5 +1,7 @@
 package ru.queuejw.lumetro.components.freeform
 
+import ru.queuejw.lumetro.components.freeform.util.DimEditView
+import ru.queuejw.lumetro.components.freeform.util.DimOverlayView
 import ru.queuejw.lumetro.components.freeform.util.LogBuffer
 import ru.queuejw.lumetro.components.freeform.util.TouchLogger
 import android.widget.ScrollView
@@ -77,9 +79,15 @@ private var appMenuParams: WindowManager.LayoutParams? = null
 
 private fun perfLog(message: String) {
     if (!perfLogEnabled) return
-    // 只写内存缓冲，不写磁盘
-    LogBuffer.add("WorkbenchOverlay", message)
-    Log.d("WorkbenchOverlay_Perf", message)
+    val timestamp = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date())
+    val logMessage = "[$timestamp] $message"
+    Log.d("WorkbenchOverlay_Perf", logMessage)
+    try {
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!dir.exists()) dir.mkdirs()
+        File(dir, "dim_debug.log").appendText("$logMessage\n")
+    } catch (e: Exception) {
+    }
 }
 
     private var overlayViewRef: WeakReference<FrameLayout>? = null
@@ -146,6 +154,29 @@ private fun perfLog(message: String) {
     // ========== 竖屏锁定图层 ==========
     private var lockTouchStartX = 0f
     private var lockTouchStartY = 0f
+    
+// ========== 省电暗幕图层 ==========
+private var dimOverlayView: DimOverlayView? = null
+private var dimOverlayParams: WindowManager.LayoutParams? = null
+private var dimButtonContainer: View? = null
+private var dimButtonParams: WindowManager.LayoutParams? = null
+private var dimAlphaSlider: android.widget.SeekBar? = null
+private var dimSliderContainer: View? = null
+private var dimSliderParams: WindowManager.LayoutParams? = null
+private var isDimOverlayShowing = false
+private var dimControlBarHeight: Int = 0
+// 编辑模式的独立窗口
+private var dimEditView: DimEditView? = null
+private var dimEditParams: WindowManager.LayoutParams? = null
+
+// 生效模式的 4 个矩形屏蔽窗口
+private var dimBlockerViews: MutableList<View> = mutableListOf()
+private var dimBlockerParamsList: MutableList<WindowManager.LayoutParams> = mutableListOf()
+
+// 持久化的框选状态
+private val dimPrefs by lazy {
+    context.getSharedPreferences("dim_overlay", Context.MODE_PRIVATE)
+}
 
     private fun showLockOverlay() {
         if (isLockOverlayShowing) return
@@ -251,6 +282,435 @@ private fun perfLog(message: String) {
             }
         }
     }
+    // ============================================================
+// ========== 省电暗幕图层 ==========
+// ============================================================
+private fun showDimOverlay() {
+    if (isDimOverlayShowing) return
+
+    try {
+        val dm = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getRealMetrics(dm)
+        val screenW = dm.widthPixels
+        val screenH = dm.heightPixels
+
+        val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        } else {
+            WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+        }
+
+        // ========== 图层 A：暗幕（不可触摸） ==========
+        val overlay = DimOverlayView(context).apply {
+    dimAlpha = dimPrefs.getInt("alpha", 200)
+    editAlpha = 100
+    editing = false   // ← 每次进来都是生效模式
+
+            val l = dimPrefs.getFloat("left", -1f)
+val t = dimPrefs.getFloat("top", -1f)
+val r = dimPrefs.getFloat("right", -1f)
+val b = dimPrefs.getFloat("bottom", -1f)
+perfLog("showDimOverlay LOAD: l=$l t=$t r=$r b=$b")
+if (l >= 0 && t >= 0 && r > l && b > t) {
+    holeRect.set(l, t, r, b)
+    perfLog("showDimOverlay APPLIED: $holeRect")
+} else {
+    perfLog("showDimOverlay SKIP (prefs invalid)")
+}
+        }
+        dimOverlayView = overlay
+
+        dimOverlayParams = WindowManager.LayoutParams(
+            screenW,
+            screenH,
+            windowType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
+
+        windowManager.addView(overlay, dimOverlayParams)
+
+        // ========== 图层 B：编辑窗口（全屏，仅编辑模式） ==========
+val editView = DimEditView(context).apply {
+    holeRect.set(overlay.holeRect)
+}
+dimEditView = editView
+
+dimEditParams = WindowManager.LayoutParams(
+    screenW,
+    screenH,
+    windowType,
+    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+    PixelFormat.TRANSLUCENT
+).apply {
+    gravity = Gravity.TOP or Gravity.START
+    x = 0
+    y = 0
+}
+
+// 无条件 add editView，但初始 visibility 跟随 editing
+editView.visibility = if (overlay.editing) View.VISIBLE else View.GONE
+windowManager.addView(editView, dimEditParams)
+
+isDimOverlayShowing = true
+
+        // 联动
+        editView.onHoleChanged = {
+    perfLog("onHoleChanged: editView=${editView.holeRect}")
+    overlay.holeRect.set(editView.holeRect)
+    overlay.invalidate()
+    saveDimHole()
+}
+
+        overlay.post {
+            overlay.ensureHoleInitialized(overlay.width, overlay.height)
+            editView.holeRect.set(overlay.holeRect)
+        }
+
+        showDimControlBar()
+
+    } catch (e: Exception) {
+        Log.e(TAG, "showDimOverlay failed", e)
+    }
+}
+
+private fun hideDimOverlay() {
+    if (!isDimOverlayShowing) return
+
+    // ========== 退出前保存 ==========
+try {
+    perfLog("hideDimOverlay BEFORE: overlay=${dimOverlayView?.holeRect} editView=${dimEditView?.holeRect}")
+    dimEditView?.let { ev ->
+        dimOverlayView?.holeRect?.set(ev.holeRect)
+    }
+    dimOverlayView?.let { view ->
+        perfLog("hideDimOverlay SAVE: ${view.holeRect}")
+        dimPrefs.edit()
+            .putFloat("left", view.holeRect.left)
+            .putFloat("top", view.holeRect.top)
+            .putFloat("right", view.holeRect.right)
+            .putFloat("bottom", view.holeRect.bottom)
+            .putInt("alpha", view.dimAlpha)
+            .apply()
+    }
+} catch (e: Exception) {
+    perfLog("hideDimOverlay SAVE FAILED: ${e.message}")
+}
+
+    try {
+        dimOverlayView?.let { windowManager.removeView(it) }
+    } catch (e: Exception) {}
+    dimOverlayView = null
+    dimOverlayParams = null
+
+    // 关键：真正 remove editView
+    try {
+        dimEditView?.let { windowManager.removeView(it) }
+    } catch (e: Exception) {}
+    dimEditView = null
+    dimEditParams = null
+
+    // 清理 4 个 blocker 窗口
+    for (v in dimBlockerViews) {
+        try { windowManager.removeView(v) } catch (e: Exception) {}
+    }
+    dimBlockerViews.clear()
+    dimBlockerParamsList.clear()
+
+    try {
+        dimButtonContainer?.let { windowManager.removeView(it) }
+    } catch (e: Exception) {}
+    dimButtonContainer = null
+    dimButtonParams = null
+
+    try {
+        dimSliderContainer?.let { windowManager.removeView(it) }
+    } catch (e: Exception) {}
+    dimSliderContainer = null
+    dimSliderParams = null
+    dimAlphaSlider = null
+
+    isDimOverlayShowing = false
+}
+
+fun isDimOverlayShowing(): Boolean = isDimOverlayShowing
+
+private fun saveDimHole() {
+    val view = dimOverlayView ?: return
+    dimPrefs.edit()
+        .putFloat("left", view.holeRect.left)
+        .putFloat("top", view.holeRect.top)
+        .putFloat("right", view.holeRect.right)
+        .putFloat("bottom", view.holeRect.bottom)
+        .apply()
+}
+
+private fun showDimControlBar() {
+    val density = context.resources.displayMetrics.density
+
+    val statusBarHeight = run {
+        val resId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (resId > 0) context.resources.getDimensionPixelSize(resId)
+        else (24 * density).toInt()
+    }
+
+    // ========== 左侧：编辑按钮（替代"暗"字） ==========
+    val editBtn = TextView(context).apply {
+        text = "✎"
+        textSize = 18f
+        setTextColor(Color.parseColor("#66FFFFFF"))
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams(
+            (28 * density).toInt(),
+            (28 * density).toInt()
+        ).apply {
+            marginEnd = (10 * density).toInt()
+        }
+        setOnClickListener {
+    val overlay = dimOverlayView ?: return@setOnClickListener
+    val newEditing = !overlay.editing
+    overlay.editing = newEditing
+    updateDimOverlayTouchable()
+    setTextColor(
+        if (newEditing) Color.parseColor("#CCFFFFFF")
+        else Color.parseColor("#66FFFFFF")
+    )
+}
+    }
+
+    // ========== 中间：暗度滑块，2px 轨 + 圆点 ==========
+    val seekBar = android.widget.SeekBar(context, null, 0).apply {
+        max = 255
+        progress = dimOverlayView?.dimAlpha ?: 200
+        layoutParams = LinearLayout.LayoutParams(
+            (270 * density).toInt(),
+            (20 * density).toInt()
+        )
+        background = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
+        // 轨道：2px 高，半透明白
+        progressDrawable = android.graphics.drawable.GradientDrawable().apply {
+    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+    cornerRadius = 1 * density
+    setColor(Color.parseColor("#22FFFFFF"))   // ← 从 #55 改成 #22
+    setSize(0, (2 * density).toInt())
+}
+        // 圆点：8dp 白圆
+        thumb = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.OVAL
+            setColor(Color.parseColor("#CCFFFFFF"))
+            setSize((8 * density).toInt(), (8 * density).toInt())
+        }
+        thumbOffset = 0
+        splitTrack = false
+
+        setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                dimOverlayView?.dimAlpha = progress
+                dimOverlayView?.invalidate()
+                dimPrefs.edit().putInt("alpha", progress).apply()
+                updateDimOverlayTouchable()
+            }
+            override fun onStartTrackingTouch(sb: android.widget.SeekBar?) {}
+            override fun onStopTrackingTouch(sb: android.widget.SeekBar?) {}
+        })
+    }
+    dimAlphaSlider = seekBar
+
+    // ========== 右侧：关闭按钮 ==========
+    val closeBtn = TextView(context).apply {
+    text = "✕"
+    textSize = 18f
+    setTextColor(Color.parseColor("#66FFFFFF"))
+    gravity = Gravity.CENTER
+    layoutParams = LinearLayout.LayoutParams(
+        (28 * density).toInt(),
+        (28 * density).toInt()
+    ).apply {
+        marginStart = (10 * density).toInt()
+    }
+    setOnClickListener {
+    perfLog("closeBtn clicked")
+    dimEditView?.let { ev ->
+        dimOverlayView?.holeRect?.set(ev.holeRect)
+    }
+    saveDimHole()
+    dimOverlayView?.let { view ->
+        dimPrefs.edit().putInt("alpha", view.dimAlpha).apply()
+    }
+    hideDimOverlay()
+}
+}
+
+    // ========== 整条：左编辑 + 中滑块 + 右关闭 ==========
+    val row = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setBackgroundColor(Color.parseColor("#33000000"))
+        setPadding(
+            (10 * density).toInt(),
+            0,
+            (10 * density).toInt(),
+            0
+        )
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            statusBarHeight
+        )
+        addView(editBtn)
+        addView(seekBar)
+        addView(closeBtn)
+    }
+    row.alpha = 0.5f
+
+    val container = FrameLayout(context).apply {
+        setBackgroundColor(Color.TRANSPARENT)
+        addView(row)
+    }
+
+    val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+    } else {
+        WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+    }
+
+    dimSliderParams = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        windowType,
+        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+        PixelFormat.TRANSLUCENT
+    ).apply {
+        gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        y = 0
+    }
+
+    windowManager.addView(container, dimSliderParams)
+    dimSliderContainer = container
+}
+
+/**
+ * 返回 true：主遮罩接收触摸（编辑模式 / 暗度 ≥ 200）
+ * 返回 false：主遮罩不接收触摸（触摸穿透，暗度 < 200 且非编辑模式）
+ */
+/**
+ * 编辑模式：不屏蔽（用户要拖框选）
+ * 生效模式：暗度 ≥ 阈值时屏蔽框外触摸
+ */
+private fun shouldBlockTouch(): Boolean {
+    val view = dimOverlayView ?: return false
+    if (view.editing) return false
+    return view.dimAlpha >= 200
+}
+
+/**
+ * 编辑模式：显示全屏编辑窗口
+ * 生效模式 + 暗度 < 阈值：全部移除
+ * 生效模式 + 暗度 ≥ 阈值：显示 4 个矩形屏蔽窗口
+ */
+private fun updateDimOverlayTouchable() {
+    val overlay = dimOverlayView ?: return
+    val editView = dimEditView ?: return
+    val editing = overlay.editing
+
+    // 先清理 blocker 窗口
+    for (v in dimBlockerViews) {
+        try { windowManager.removeView(v) } catch (e: Exception) {}
+    }
+    dimBlockerViews.clear()
+    dimBlockerParamsList.clear()
+
+    // 编辑窗口：用 visibility 切换，不 remove/add
+editView.visibility = if (editing) View.VISIBLE else View.GONE
+
+if (editing) {
+    return
+}
+
+    if (overlay.dimAlpha < 200) return
+
+    // 生效模式 + 暗度 ≥ 阈值：创建 4 个 blocker
+    val dm = android.util.DisplayMetrics()
+    @Suppress("DEPRECATION")
+    windowManager.defaultDisplay.getRealMetrics(dm)
+    val screenW = dm.widthPixels
+    val screenH = dm.heightPixels
+
+    val hole = overlay.holeRect
+    val top = hole.top.toInt().coerceIn(0, screenH)
+    val bottom = hole.bottom.toInt().coerceIn(0, screenH)
+    val left = hole.left.toInt().coerceIn(0, screenW)
+    val right = hole.right.toInt().coerceIn(0, screenW)
+
+    val statusBarHeight = run {
+        val resId = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+        if (resId > 0) context.resources.getDimensionPixelSize(resId)
+        else (24 * context.resources.displayMetrics.density).toInt()
+    }
+    val controlBarBottom = statusBarHeight + (4 * context.resources.displayMetrics.density).toInt()
+
+    val rects = listOf(
+        intArrayOf(0, controlBarBottom, screenW, top),
+        intArrayOf(0, bottom, screenW, screenH),
+        intArrayOf(0, top, left, bottom),
+        intArrayOf(right, top, screenW, bottom)
+    )
+
+    val windowType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+    } else {
+        WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
+    }
+
+    for (r in rects) {
+        val w = r[2] - r[0]
+        val h = r[3] - r[1]
+        if (w <= 0 || h <= 0) continue
+
+        val blocker = object : View(context) {
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                return true
+            }
+        }
+
+        val params = WindowManager.LayoutParams(
+            w,
+            h,
+            windowType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = r[0]
+            y = r[1]
+        }
+
+        try {
+            windowManager.addView(blocker, params)
+            dimBlockerViews.add(blocker)
+            dimBlockerParamsList.add(params)
+        } catch (e: Exception) {
+            Log.e(TAG, "add blocker failed", e)
+        }
+    }
+}
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -273,6 +733,10 @@ private fun perfLog(message: String) {
                 handler.post {
                     val dm = context.resources.displayMetrics
                     val isLandscape = dm.widthPixels > dm.heightPixels
+                    // 横竖屏切换时关闭省电图层
+if (isDimOverlayShowing) {
+    hideDimOverlay()
+}
 
                     val hadLock = isLockOverlayShowing || (landscapeOverlay?.isLockShowing() == true)
 
@@ -339,6 +803,10 @@ private fun perfLog(message: String) {
     private fun hideWorkbenchOnScreenOff() {
         try {
             landscapeOverlay?.onScreenOff()
+            // 锁屏时关闭省电图层
+if (isDimOverlayShowing) {
+    hideDimOverlay()
+}
 
             val view = overlayViewRef?.get()
             if (view != null && isShowing) {
@@ -387,58 +855,58 @@ private fun perfLog(message: String) {
                 val createStart = System.currentTimeMillis()
                 val loader = iconLoader ?: IconLoader(false, null)
                 val panel = AppListPanel(
-                    context = context,
-                    iconLoader = loader,
-                    coroutineScope = coroutineScope,
-                    onHidePanel = { hideAppsList() },
-                    onRefreshTiles = {},
-                    onShowSettings = {
-                        try {
-                            val intent = Intent(context, WorkbenchSettingsActivity::class.java)
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            context.startActivity(intent)
-                            hideAppsList()
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    onShowFreezeDialog = {},
-                    onPinApp = {},
-                    onRefreshApps = {},
-                    onAppsChanged = { apps ->
-                        updateSearchSlots(apps)
-                    },
-                    onPageChangeRequested = { direction ->
-                        if (direction > 0) {
-                            nextPage()
-                        } else {
-                            previousPage()
-                        }
-                    },
-                    onOpenNotificationCenter = {
-                        hideAppsList()
-                        try {
-                            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
-                        } catch (e: Exception) {
-                            try {
-                                val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
-                                val method = statusBarService.javaClass.getMethod("expandNotificationsPanel")
-                                method.invoke(statusBarService)
-                            } catch (e2: Exception) {}
-                        }
-                    },
-                    onOpenControlCenter = {
-                        hideAppsList()
-                        try {
-                            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
-                        } catch (e: Exception) {
-                            try {
-                                val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
-                                val method = statusBarService.javaClass.getMethod("expandSettingsPanel")
-                                method.invoke(statusBarService)
-                            } catch (e2: Exception) {}
-                        }
-                    },
+    context = context,
+    iconLoader = loader,
+    coroutineScope = coroutineScope,
+    onHidePanel = { hideAppsList() },
+    onRefreshTiles = {},
+    onShowSettings = {
+        try {
+            val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            hideAppsList()
+        } catch (e: Exception) {
+            Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+        }
+    },
+    onShowFreezeDialog = {},
+    onPinApp = {},
+    onRefreshApps = {},
+    onAppsChanged = { apps ->
+        updateSearchSlots(apps)
+    },
+    onPageChangeRequested = { direction ->
+        if (direction > 0) {
+            nextPage()
+        } else {
+            previousPage()
+        }
+    },
+    onOpenNotificationCenter = {
+        hideAppsList()
+        try {
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+        } catch (e: Exception) {
+            try {
+                val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                val method = statusBarService.javaClass.getMethod("expandNotificationsPanel")
+                method.invoke(statusBarService)
+            } catch (e2: Exception) {}
+        }
+    },
+    onOpenControlCenter = {
+        hideAppsList()
+        try {
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
+        } catch (e: Exception) {
+            try {
+                val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                val method = statusBarService.javaClass.getMethod("expandSettingsPanel")
+                method.invoke(statusBarService)
+            } catch (e2: Exception) {}
+        }
+    },
     onLockRequested = {
         hide()
         showLockOverlay()
@@ -452,7 +920,10 @@ private fun perfLog(message: String) {
         showKeyBindingDialog(digit)
     },
     overlayContext = service,
-    onHideWorkbench = { hide() }
+    onHideWorkbench = { hide() },
+    onPowerSaveRequested = {
+    showDimOverlay()
+}
 )
                 
 
@@ -1040,58 +1511,58 @@ private fun perfLog(message: String) {
             val createStart = System.currentTimeMillis()
             val loader = iconLoader ?: IconLoader(false, null)
             val panel = AppListPanel(
-                context = context,
-                iconLoader = loader,
-                coroutineScope = coroutineScope,
-                onHidePanel = { hideAppsList() },
-                onRefreshTiles = {},
-                onShowSettings = {
-                    try {
-                        val intent = Intent(context, WorkbenchSettingsActivity::class.java)
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                        hideAppsList()
-                    } catch (e: Exception) {
-                        Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                onShowFreezeDialog = {},
-                onPinApp = {},
-                onRefreshApps = {},
-                onAppsChanged = { apps ->
-                    updateSearchSlots(apps)
-                },
-                onPageChangeRequested = { direction ->
-                    if (direction > 0) {
-                        nextPage()
-                    } else {
-                        previousPage()
-                    }
-                },
-                onOpenNotificationCenter = {
-                    hideAppsList()
-                    try {
-                        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
-                    } catch (e: Exception) {
-                        try {
-                            val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
-                            val method = statusBarService.javaClass.getMethod("expandNotificationsPanel")
-                            method.invoke(statusBarService)
-                        } catch (e2: Exception) {}
-                    }
-                },
-                onOpenControlCenter = {
-                    hideAppsList()
-                    try {
-                        service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
-                    } catch (e: Exception) {
-                        try {
-                            val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
-                            val method = statusBarService.javaClass.getMethod("expandSettingsPanel")
-                            method.invoke(statusBarService)
-                        } catch (e2: Exception) {}
-                    }
-                },
+    context = context,
+    iconLoader = loader,
+    coroutineScope = coroutineScope,
+    onHidePanel = { hideAppsList() },
+    onRefreshTiles = {},
+    onShowSettings = {
+        try {
+            val intent = Intent(context, WorkbenchSettingsActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            hideAppsList()
+        } catch (e: Exception) {
+            Toast.makeText(context, "无法打开设置", Toast.LENGTH_SHORT).show()
+        }
+    },
+    onShowFreezeDialog = {},
+    onPinApp = {},
+    onRefreshApps = {},
+    onAppsChanged = { apps ->
+        updateSearchSlots(apps)
+    },
+    onPageChangeRequested = { direction ->
+        if (direction > 0) {
+            nextPage()
+        } else {
+            previousPage()
+        }
+    },
+    onOpenNotificationCenter = {
+        hideAppsList()
+        try {
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+        } catch (e: Exception) {
+            try {
+                val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                val method = statusBarService.javaClass.getMethod("expandNotificationsPanel")
+                method.invoke(statusBarService)
+            } catch (e2: Exception) {}
+        }
+    },
+    onOpenControlCenter = {
+        hideAppsList()
+        try {
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
+        } catch (e: Exception) {
+            try {
+                val statusBarService = context.getSystemService(Context.STATUS_BAR_SERVICE)
+                val method = statusBarService.javaClass.getMethod("expandSettingsPanel")
+                method.invoke(statusBarService)
+            } catch (e2: Exception) {}
+        }
+    },
     onLockRequested = {
         hide()
         showLockOverlay()
@@ -1105,7 +1576,10 @@ private fun perfLog(message: String) {
         showKeyBindingDialog(digit)
     },
     overlayContext = service,
-    onHideWorkbench = { hide() }
+    onHideWorkbench = { hide() },
+    onPowerSaveRequested = {
+    showDimOverlay()
+}
 )
             preCreatedAppListPanel = panel
 
@@ -2653,12 +3127,11 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
         preCreatedAppListPanel?.clearSearch()
         hideAppsList()
     }
-    
-    // ========== 顺便清理其他浮层 ==========
     dismissKeyBindingDialog()
     dismissAppPicker()
     dismissShortcutPicker()
     hideLockOverlay()
+    hideDimOverlay()                       // ← 新增
     handler.removeCallbacksAndMessages(null)
 }
 }

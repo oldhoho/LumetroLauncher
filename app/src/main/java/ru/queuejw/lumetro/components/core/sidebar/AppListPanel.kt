@@ -58,7 +58,8 @@ class AppListPanel(
     private val onUnlockRequested: (() -> Unit)? = null,
     private val onKeyLongPress: ((String) -> Unit)? = null,
     private val overlayContext: Context? = null,
-    private val onHideWorkbench: (() -> Unit)? = null
+    private val onHideWorkbench: (() -> Unit)? = null,
+    private val onPowerSaveRequested: (() -> Unit)? = null
 ) {
 
     private val perfLogEnabled = false
@@ -516,7 +517,7 @@ class AppListPanel(
     row3.addView(createDigitKey("7", "PQRS"))
     row3.addView(createDigitKey("8", "TUV"))
     row3.addView(createDigitKey("9", "WXYZ"))
-    row3.addView(createSpecialKey("控制", isControlCenter = true))
+    row3.addView(createSpecialKey("控制", isControlCenter = true, isPowerSaveKey = true))
     container.addView(row3)
 
     // 第四行：全部 | 未冻结 | 0 | 已冻结 | 清空
@@ -1560,7 +1561,8 @@ class AppListPanel(
     isClearAll: Boolean = false,
     isNotificationCenter: Boolean = false,
     isControlCenter: Boolean = false,
-    isHideKey: Boolean = false
+    isHideKey: Boolean = false,
+    isPowerSaveKey: Boolean = false
 ): View {
 
     // ========== "隐藏"键：主文字"隐藏" + 下方小字"锁定" ==========
@@ -1575,13 +1577,11 @@ class AppListPanel(
             isClickable = true
             isLongClickable = true
 
-            // 短按：隐藏工作台面板
             setOnClickListener {
                 onHidePanel()
                 onHideWorkbench?.invoke()
             }
 
-            // 长按：隐藏 + 显示锁定图层
             setOnLongClickListener {
                 onHidePanel()
                 onLockRequested?.invoke()
@@ -1606,6 +1606,65 @@ class AppListPanel(
 
         val subText = TextView(context).apply {
             text = "锁定"
+            textSize = 8f
+            setTextColor(Color.parseColor("#88FFFFFF"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 1.dpToPx()
+            }
+            maxLines = 1
+            includeFontPadding = false
+        }
+        container.addView(subText)
+
+        return container
+    }
+
+    // ========== "控制"键：主文字"控制" + 下方小字"省电"，长按触发省电图层 ==========
+    if (isPowerSaveKey) {
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
+                setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
+            }
+            background = createMacKeyBackground()
+            isClickable = true
+            isLongClickable = true
+
+            // 短按：原行为（打开控制中心）
+            setOnClickListener {
+                onOpenControlCenter?.invoke()
+            }
+
+            // 长按：省电图层
+            setOnLongClickListener {
+                onHidePanel()
+                onPowerSaveRequested?.invoke()
+                Toast.makeText(context, "已进入省电图层", Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+
+        val mainText = TextView(context).apply {
+            text = "控制"
+            textSize = 11f
+            setTextColor(Color.parseColor("#FFEBEBF5"))
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            maxLines = 1
+            includeFontPadding = false
+        }
+        container.addView(mainText)
+
+        val subText = TextView(context).apply {
+            text = "省电"
             textSize = 8f
             setTextColor(Color.parseColor("#88FFFFFF"))
             gravity = Gravity.CENTER
