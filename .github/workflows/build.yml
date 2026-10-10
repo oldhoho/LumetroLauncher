@@ -21,6 +21,9 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # 默认包列表含已废弃的 `tools`，会导致 sdkmanager 报 Failed to find package 'tools'，改为项目实际需要的有效包
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
       # gradle.properties 里的 aapt2FromMavenOverride 指向 AndroidIDE 设备路径，CI 上不存在会构建失败，先移除
       - name: Remove AndroidIDE-only aapt2 override
