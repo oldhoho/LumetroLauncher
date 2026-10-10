@@ -325,8 +325,7 @@ private var cachedApps = mutableListOf<App>()
             cachedAppList = apps
             cacheTimestamp = System.currentTimeMillis()
             cachedAppsHash = apps.hashCode()
-            cachedApps.clear()
-            cachedApps.addAll(apps)
+            cachedApps = apps.toMutableList()
         }
         perfLog("init: loaded ${apps.size} apps")
         
@@ -444,8 +443,7 @@ while (isLoadingApps && retryCount < 10) {
                 cachedAppList = apps
                 cacheTimestamp = System.currentTimeMillis()
                 cachedAppsHash = apps.hashCode()
-                cachedApps.clear()
-                cachedApps.addAll(apps)
+                cachedApps = apps.toMutableList()
                 isLoadingApps = false
             }
             
@@ -725,7 +723,7 @@ while (isLoadingApps && retryCount < 10) {
     }
 }
 
-    fun getCachedApps(): List<App> = cachedApps
+    fun getCachedApps(): List<App> = cachedApps.toList()
 
     // ========== 冻结功能 ==========
 

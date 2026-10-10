@@ -1238,6 +1238,15 @@ fun showAppsList() {
         searchAppSlots.add("" to "")
     }
 
+    if (cachedApps.isEmpty()) {
+        val warm = manager.getCachedApps()
+        if (warm.isNotEmpty()) {
+            cachedApps = warm.toMutableList()
+            cachedAppsHash = warm.hashCode()
+            perfLog("showAppsList: seeded cachedApps from manager (${warm.size})")
+        }
+    }
+
     val allApps = cachedApps.ifEmpty { manager.getCachedApps() }
     for (app in allApps.take(MAX_APPS)) {
         val pkg = app.mPackage ?: continue
