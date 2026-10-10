@@ -39,6 +39,27 @@ class MainActivity : AppCompatActivity() {
     private var volumePressCount = 0
     private var lastVolumePressTime = 0L
     private var unlockReceiver: BroadcastReceiver? = null
+    
+    override fun onResume() {
+    super.onResume()
+    // 每次回到前台，检查权限是否给了
+    checkAndReloadApps()
+}
+
+private fun checkAndReloadApps() {
+    try {
+        val pm = packageManager
+        val all = pm.getInstalledApplications(0)
+        if (all.size >= 5) {
+            // 权限有了，通知 manager 重新加载
+            WorkbenchManager.getInstance()?.let { manager ->
+                if (manager.getCachedApps().size < 5) {
+                    manager.forceReloadApps()
+                }
+            }
+        }
+    } catch (e: Exception) { }
+}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

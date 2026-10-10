@@ -57,7 +57,7 @@ class WorkbenchOverlay(
     private val context: Context = service.applicationContext
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val coroutineScope = manager.getCoroutineScope()
-    private val iconLoader: IconLoader? = manager.getIconLoader()
+    private var iconLoader: IconLoader? = manager.getIconLoader()
     private val iconCache: MutableMap<String, Bitmap> = manager.getIconCache()
     private val settings = manager.getSettings()
     private val prefs = context.getSharedPreferences("workbench", Context.MODE_PRIVATE)
@@ -116,7 +116,8 @@ private fun perfLog(message: String) {
     private var touchDownX = 0f
     private var touchDownY = 0f
 
-    private val cachedApps = mutableListOf<App>()
+    @Volatile
+private var cachedApps: MutableList<App> = mutableListOf()
 
     private val MAX_SLOTS = 7
     private val MAX_APPS = 50
@@ -847,9 +848,8 @@ if (isDimOverlayShowing) {
         preCreateJob = coroutineScope.launch(Dispatchers.IO) {
             try {
                 val apps = manager.getCachedApps()
-                cachedApps.clear()
-                cachedApps.addAll(apps)
-                cachedAppsHash = apps.hashCode()
+                cachedApps = apps.toMutableList()
+cachedAppsHash = apps.hashCode()
                 perfLog("preCreateAppListPanel: got ${apps.size} apps in ${System.currentTimeMillis() - startTime}ms")
 
                 val createStart = System.currentTimeMillis()
@@ -954,13 +954,13 @@ if (isDimOverlayShowing) {
         val newHash = apps.hashCode()
 
         if (cachedAppsHash != newHash) {
-            perfLog("getAppsWithCache: apps changed, updating cache")
-            cachedApps.clear()
-            cachedApps.addAll(apps)
-            cachedAppsHash = newHash
-        }
+    perfLog("getAppsWithCache: apps changed, updating cache")
+    cachedApps = apps.toMutableList()
+    cachedAppsHash = newHash
+}
 
-        return if (cachedApps.isNotEmpty()) cachedApps else apps
+val snapshot = cachedApps
+return if (snapshot.isNotEmpty()) snapshot else apps
     }
 
     private fun updateSearchSlots(apps: List<App>) {
@@ -1175,14 +1175,14 @@ if (isDimOverlayShowing) {
     fun isShowing(): Boolean = isShowing
 
     fun forceRefreshIcons() {
+        iconLoader = manager.getIconLoader()
         perfLog("forceRefreshIcons")
         refreshAppSlots()
 
         if (isAppsPanelShowing) {
             val apps = manager.getCachedApps()
-            cachedApps.clear()
-            cachedApps.addAll(apps)
-            cachedAppsHash = apps.hashCode()
+            cachedApps = apps.toMutableList()
+cachedAppsHash = apps.hashCode()
             preCreatedAppListPanel?.refresh(apps)
             Log.d(TAG, "App list panel refreshed with ${apps.size} apps")
         }
@@ -1211,58 +1211,72 @@ if (isDimOverlayShowing) {
     }
 
     // ========== 应用列表面板 ==========
-    fun showAppsList() {
-        perfLog("showAppsList START")
+    private var isLoadingApps = false    // ← 新增字段
 
-        if (isAppsPanelShowing) {
-            hideAppsList()
-            return
-        }
+fun showAppsList() {
+    perfLog("showAppsList START")
 
-        if (!isShowing) {
-            show()
-        }
+    if (isAppsPanelShowing) {
+        hideAppsList()
+        return
+    }
 
-        isSearchMode = true
-        searchAppSlots.clear()
+    if (!isShowing) {
+        show()
+    }
 
-        for (i in 0 until 6) {
-            searchAppSlots.add("" to "")
-        }
+    // ★ 如果已经在加载中，直接返回，不再递归
+    if (isLoadingApps) {
+        perfLog("showAppsList: already loading, skip")
+        return
+    }
 
-        val allApps = cachedApps.ifEmpty { manager.getCachedApps() }
-        for (app in allApps.take(MAX_APPS)) {
-            val pkg = app.mPackage ?: continue
-            searchAppSlots.add(pkg to app.mName)
-        }
+    isSearchMode = true
+    searchAppSlots.clear()
 
-        mergeSlots()
+    for (i in 0 until 6) {
+        searchAppSlots.add("" to "")
+    }
 
-        currentPage = 1
-        refreshAppSlots()
+    val allApps = cachedApps.ifEmpty { manager.getCachedApps() }
+    for (app in allApps.take(MAX_APPS)) {
+        val pkg = app.mPackage ?: continue
+        searchAppSlots.add(pkg to app.mName)
+    }
 
-        if (cachedApps.isEmpty()) {
-            perfLog("showAppsList: cachedApps is empty, loading from manager")
-            coroutineScope.launch(Dispatchers.IO) {
-                val apps = manager.getCachedApps()
-                cachedApps.clear()
-                cachedApps.addAll(apps)
+    mergeSlots()
+    currentPage = 1
+    refreshAppSlots()
+
+    if (cachedApps.isEmpty()) {
+        perfLog("showAppsList: cachedApps is empty, loading from manager")
+        isLoadingApps = true
+        coroutineScope.launch(Dispatchers.IO) {
+            val apps = manager.getCachedApps()
+            withContext(Dispatchers.Main) {
+                cachedApps = apps.toMutableList()
                 cachedAppsHash = apps.hashCode()
-                withContext(Dispatchers.Main) {
+                isLoadingApps = false
+                // ★ 只有加载到非空数据才重试
+                if (apps.isNotEmpty()) {
                     showAppsList()
+                } else {
+                    perfLog("showAppsList: manager also returned empty, abort")
+                    Toast.makeText(context, "无法加载应用列表", Toast.LENGTH_SHORT).show()
                 }
             }
-            return
         }
-
-        if (isAppListReady && preCreatedView != null && preCreatedAppListPanel != null) {
-            showPreCreatedAppList()
-            return
-        }
-
-        perfLog("showAppsList: pre-created not ready, using fallback")
-        showAppsListFallback()
+        return
     }
+
+    if (isAppListReady && preCreatedView != null && preCreatedAppListPanel != null) {
+        showPreCreatedAppList()
+        return
+    }
+
+    perfLog("showAppsList: pre-created not ready, using fallback")
+    showAppsListFallback()
+}
 
     private fun getOverlayWindowType(): Int {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -1361,13 +1375,13 @@ if (isDimOverlayShowing) {
                 (view.parent as? ViewGroup)?.removeView(view)
                 contentContainer.addView(view)
 
-                val currentApps = if (cachedApps.isNotEmpty()) cachedApps else runBlocking { manager.getCachedApps() }
+                val snap = cachedApps
+val currentApps = if (snap.isNotEmpty()) snap else runBlocking { manager.getCachedApps() }
 
-                if (cachedApps.isEmpty() && currentApps.isNotEmpty()) {
-                    cachedApps.clear()
-                    cachedApps.addAll(currentApps)
-                    cachedAppsHash = currentApps.hashCode()
-                }
+if (snap.isEmpty() && currentApps.isNotEmpty()) {
+    cachedApps = currentApps.toMutableList()
+    cachedAppsHash = currentApps.hashCode()
+}
 
                 preCreatedAppListPanel?.refresh(currentApps)
                 perfLog("showPreCreatedAppList: refreshed with ${currentApps.size} apps")
@@ -1420,18 +1434,18 @@ if (isDimOverlayShowing) {
         perfLog("showAppsListFallback START")
 
         try {
-            if (cachedApps.isEmpty()) {
-                perfLog("showAppsListFallback: cachedApps is empty, loading...")
-                val apps = runBlocking { manager.getCachedApps() }
-                cachedApps.clear()
-                cachedApps.addAll(apps)
-                cachedAppsHash = apps.hashCode()
-                if (apps.isEmpty()) {
-                    perfLog("showAppsListFallback: no apps loaded!")
-                    Toast.makeText(context, "无法加载应用列表", Toast.LENGTH_SHORT).show()
-                    return
-                }
-            }
+            val snapFB = cachedApps
+if (snapFB.isEmpty()) {
+    perfLog("showAppsListFallback: cachedApps is empty, loading...")
+    val apps = runBlocking { manager.getCachedApps() }
+    cachedApps = apps.toMutableList()
+    cachedAppsHash = apps.hashCode()
+    if (apps.isEmpty()) {
+        perfLog("showAppsListFallback: no apps loaded!")
+        Toast.makeText(context, "无法加载应用列表", Toast.LENGTH_SHORT).show()
+        return
+    }
+}
 
             val screenWidth = context.resources.displayMetrics.widthPixels
             val screenHeight = context.resources.displayMetrics.heightPixels
@@ -1591,7 +1605,7 @@ if (isDimOverlayShowing) {
             view.setOnTouchListener { _, _ -> false }
 
             val loadStart = System.currentTimeMillis()
-            panel.loadApps(cachedApps)
+            panel.loadApps(cachedApps.toList())
             perfLog("showAppsListFallback: loaded ${cachedApps.size} apps in ${System.currentTimeMillis() - loadStart}ms")
 
             rootContainer.addView(contentContainer)
@@ -2949,7 +2963,7 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
     }
 
     private fun refreshAppList() {
-        preCreatedAppListPanel?.refresh(cachedApps)
+        preCreatedAppListPanel?.refresh(cachedApps.toList())
     }
 
     private fun createEmptySlot(slotWidth: Int): View {
@@ -2994,8 +3008,11 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
     }
 
     private fun switchToApp(packageName: String, appName: String) {
-        try {
-            val tasks = activityManager.getRunningTasks(50)
+    // 记录点击历史
+    preCreatedAppListPanel?.recordAppClick(packageName)
+
+    try {
+        val tasks = activityManager.getRunningTasks(50)
             for (task in tasks) {
                 val topActivity = task.topActivity
                 if (topActivity != null && topActivity.packageName == packageName) {

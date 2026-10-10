@@ -8,7 +8,7 @@ class WorkbenchSettings(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("workbench_settings", Context.MODE_PRIVATE)
 
     var height: Int
-        get() = prefs.getInt("workbench_height", 180)
+        get() = prefs.getInt("workbench_height", 46)
         set(value) {
             prefs.edit().putInt("workbench_height", value).apply()
         }
@@ -97,7 +97,7 @@ class WorkbenchSettings(context: Context) {
     fun resetToDefaults() {
         try {
             prefs.edit().clear().apply()
-            height = 180
+            height = 46
             enabled = true
             showAppsListOnStart = false
             autoHideDelay = 0

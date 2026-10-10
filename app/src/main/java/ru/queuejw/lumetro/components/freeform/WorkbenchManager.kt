@@ -16,12 +16,14 @@ import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
-import android.widget.Toast
 import kotlinx.coroutines.*
 import ru.queuejw.lumetro.components.core.AppManager
 import ru.queuejw.lumetro.components.core.icons.IconLoader
@@ -90,6 +92,69 @@ class WorkbenchManager(
             instance?.updateForegroundApp(packageName)
         }
     }
+    
+    fun forceReloadApps() {
+    Log.d(TAG, "forceReloadApps: reloading")
+    coroutineScope.launch(Dispatchers.IO) {
+        try {
+            val apps = loadAppsFromPackageManager()
+            Log.d(TAG, "forceReloadApps: loaded ${apps.size} apps")
+            if (apps.isNotEmpty()) {
+                synchronized(cacheLock) {
+                    cachedAppList = apps
+                    cacheTimestamp = System.currentTimeMillis()
+                    cachedAppsHash = apps.hashCode()
+                    cachedApps = apps.toMutableList()
+                }
+                withContext(Dispatchers.Main) {
+                    workbenchOverlayRef?.get()?.forceRefreshIcons()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "forceReloadApps failed", e)
+        }
+    }
+}
+    
+    /**
+ * 检查"读取应用列表"权限（vivo/小米等 ROM 特有）
+ * 读不到就弹提示 + 跳设置
+ */
+private fun checkAppListPermission() {
+    try {
+        val pm = context.packageManager
+        val all = pm.getInstalledApplications(0)
+        Log.d(TAG, "checkAppListPermission: installed=${all.size}")
+
+        // 正常情况下应该能看到几十到几百个应用
+        // 如果少于 5 个，说明权限没开
+        if (all.size < 5) {
+            Log.w(TAG, "App list permission missing! Only ${all.size} apps visible")
+
+            // 在主线程弹提示 + 跳设置
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    Toast.makeText(
+                        context,
+                        "请授予「读取应用列表」权限，否则无法显示应用",
+                        Toast.LENGTH_LONG
+                    ).show()
+
+                    // 跳转应用详情页（用户手动开权限）
+                    val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = android.net.Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to open app settings", e)
+                }
+            }
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "checkAppListPermission failed", e)
+    }
+}
 
     // ========== 性能日志 ==========
     private val perfLogEnabled = false
@@ -122,7 +187,8 @@ class WorkbenchManager(
 
     // ========== 状态 ==========
     private var isInitialized = false
-    private var cachedApps = mutableListOf<App>()
+    @Volatile
+private var cachedApps = mutableListOf<App>()
     private var settings = WorkbenchSettings(context)
 
     // ========== 当前 Activity 引用 ==========
@@ -248,6 +314,10 @@ class WorkbenchManager(
 
         initializeWorkbench()
         
+        // ========== 检查"读取应用列表"权限 ==========
+        checkAppListPermission()
+
+        
         // 同步加载应用列表
         perfLog("init: loading apps synchronously")
         val apps = loadAppsFromPackageManager()
@@ -315,8 +385,7 @@ class WorkbenchManager(
             try {
                 perfLog("preInitializeAfterUnlock: pre-creating app list")
                 val apps = getCachedApps()
-                cachedApps.clear()
-                cachedApps.addAll(apps)
+cachedApps = apps.toMutableList()
                 
                 withContext(Dispatchers.Main) {
                     if (workbenchOverlayRef?.get() == null) {
@@ -348,15 +417,16 @@ class WorkbenchManager(
         }
         
         var retryCount = 0
-        while (isLoadingApps && retryCount < 10) {
-            delay(50)
-            retryCount++
-            synchronized(cacheLock) {
-                if (cachedAppList != null && (now - cacheTimestamp) < CACHE_VALID_DURATION) {
-                    return cachedAppList!!
-                }
-            }
+while (isLoadingApps && retryCount < 10) {
+    delay(50)
+    retryCount++
+    synchronized(cacheLock) {
+        // 只有非强制刷新才返回缓存
+        if (!forceRefresh && cachedAppList != null && (now - cacheTimestamp) < CACHE_VALID_DURATION) {
+            return cachedAppList!!
         }
+    }
+}
         
         perfLog("getCachedApps: loading fresh")
         val loadStart = System.currentTimeMillis()
@@ -424,12 +494,11 @@ class WorkbenchManager(
         perfLog("getCachedAppsSync: loading synchronously")
         val apps = loadAppsFromPackageManager()
         synchronized(cacheLock) {
-            cachedAppList = apps
-            cacheTimestamp = now
-            cachedAppsHash = apps.hashCode()
-            cachedApps.clear()
-            cachedApps.addAll(apps)
-        }
+    cachedAppList = apps
+    cacheTimestamp = now
+    cachedAppsHash = apps.hashCode()
+    cachedApps = apps.toMutableList()
+}
         return apps
     }
     
@@ -639,22 +708,22 @@ class WorkbenchManager(
     // ========== 应用列表管理 ==========
 
     fun refreshApps() {
-        refreshJob?.cancel()
-        refreshJob = coroutineScope.launch(Dispatchers.IO) {
-            try {
-                val apps = getCachedApps(forceRefresh = true)
-                cachedApps.clear()
-                cachedApps.addAll(apps)
-                Log.d(TAG, "Apps refreshed: ${cachedApps.size} apps")
-                
-                withContext(Dispatchers.Main) {
-                    workbenchOverlayRef?.get()?.forceRefreshIcons()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to refresh apps", e)
+    refreshJob?.cancel()
+    refreshJob = coroutineScope.launch(Dispatchers.IO) {
+        try {
+            val apps = getCachedApps(forceRefresh = true)
+            // 整体替换，避免 clear/addAll 的并发问题
+            cachedApps = apps.toMutableList()
+            Log.d(TAG, "Apps refreshed: ${cachedApps.size} apps")
+
+            withContext(Dispatchers.Main) {
+                workbenchOverlayRef?.get()?.forceRefreshIcons()
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to refresh apps", e)
         }
     }
+}
 
     fun getCachedApps(): List<App> = cachedApps
 

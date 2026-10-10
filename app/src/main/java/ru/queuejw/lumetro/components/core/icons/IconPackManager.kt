@@ -15,7 +15,6 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import androidx.collection.SparseArrayCompat
-import androidx.collection.mutableScatterMapOf
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
@@ -30,7 +29,7 @@ class IconPackManager(val context: Context) {
         var packageName: String? = null
         var name: String? = null
         private var mLoaded = false
-        private val mPackagesDrawables = mutableScatterMapOf<String?, String?>()
+        private val mPackagesDrawables = HashMap<String?, String?>()
         private val mBackImages: SparseArrayCompat<Bitmap> = SparseArrayCompat()
         private var mMaskImage: Bitmap? = null
         private var mFrontImage: Bitmap? = null
@@ -40,26 +39,25 @@ class IconPackManager(val context: Context) {
 
         @SuppressLint("DiscouragedApi")
         private fun load() {
-            // load appfilter.xml from the icon pack package
             runCatching {
-                var xpp: XmlPullParser? = null
-                iconPackRes = context.packageManager.getResourcesForApplication(packageName!!)
-                val appFilterId = iconPackRes!!.getIdentifier("appfilter", "xml", packageName)
-                if (appFilterId > 0) {
-                    xpp = iconPackRes!!.getXml(appFilterId)
-                } else {
-                    // no resource found, try to open it from assets folder
-                    runCatching {
-                        val appFilterStream = iconPackRes!!.assets.open("appfilter.xml")
-                        val factory = XmlPullParserFactory.newInstance()
-                        factory.isNamespaceAware = true
-                        xpp = factory.newPullParser()
-                        xpp.setInput(appFilterStream, "utf-8")
-                    }.getOrElse {
-                        //Ln.d("No appfilter.xml file");
+                val parser: XmlPullParser? = run {
+                    iconPackRes = context.packageManager.getResourcesForApplication(packageName!!)
+                    val appFilterId = iconPackRes!!.getIdentifier("appfilter", "xml", packageName)
+                    if (appFilterId > 0) {
+                        iconPackRes!!.getXml(appFilterId)
+                    } else {
+                        runCatching {
+                            val appFilterStream = iconPackRes!!.assets.open("appfilter.xml")
+                            val factory = XmlPullParserFactory.newInstance()
+                            factory.isNamespaceAware = true
+                            val p = factory.newPullParser()
+                            p.setInput(appFilterStream, "utf-8")
+                            p
+                        }.getOrNull()
                     }
                 }
-                if (xpp != null) {
+                if (parser != null) {
+                    val xpp = parser
                     var eventType = xpp.eventType
                     while (eventType != XmlPullParser.END_DOCUMENT) {
                         if (eventType == XmlPullParser.START_TAG) {
@@ -138,37 +136,74 @@ class IconPackManager(val context: Context) {
             return if (id > 0) ResourcesCompat.getDrawable(iconPackRes!!, id, null) else null
         }
 
+        /** 按包名兜底匹配：找 appfilter.xml 里所有以 ComponentInfo{包名/ 开头的 key */
+        private fun fallbackDrawableByPackage(appPackageName: String): Drawable? {
+            val pkgPrefix = "ComponentInfo{$appPackageName/"
+            for ((key, value) in mPackagesDrawables) {
+                if (key != null && key.startsWith(pkgPrefix)) {
+                    val d = loadDrawable(value ?: continue)
+                    if (d != null) return d
+                }
+            }
+            return null
+        }
+
+        /** 按包名兜底匹配：返回 Bitmap */
+        private fun fallbackBitmapByPackage(appPackageName: String): Bitmap? {
+            val pkgPrefix = "ComponentInfo{$appPackageName/"
+            for ((key, value) in mPackagesDrawables) {
+                if (key != null && key.startsWith(pkgPrefix)) {
+                    val bmp = loadBitmap(value ?: continue)
+                    if (bmp != null) return bmp
+                }
+            }
+            return null
+        }
+
         @SuppressLint("DiscouragedApi")
         fun getDrawableIconForPackage(
             appPackageName: String?,
             defaultDrawable: Drawable?
         ): Drawable? {
             if (!mLoaded) load()
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(appPackageName!!)
-            var componentName: String? = null
-            if (launchIntent != null) componentName =
-                context.packageManager.getLaunchIntentForPackage(appPackageName)!!.component.toString()
-            var drawable = mPackagesDrawables[componentName]
+            if (appPackageName == null) return defaultDrawable
+
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(appPackageName)
+            val componentName: String?
+
+            if (launchIntent != null) {
+                componentName = launchIntent.component?.toString()
+            } else {
+                // 冻结/停用应用：launchIntent == null，直接按包名兜底
+                val fallback = fallbackDrawableByPackage(appPackageName)
+                if (fallback != null) return fallback
+                return defaultDrawable
+            }
+
+            // 1. 精确匹配 ComponentInfo
+            val drawable = mPackagesDrawables[componentName]
             if (drawable != null) {
                 return loadDrawable(drawable)
-            } else {
-                // try to get a resource with the component filename
-                if (componentName != null) {
-                    val start = componentName.indexOf("{") + 1
-                    val end = componentName.indexOf("}", start)
-                    if (end > start) {
-                        drawable =
-                            componentName.substring(start, end).lowercase(Locale.getDefault())
-                                .replace(".", "_").replace("/", "_")
-                        if (iconPackRes!!.getIdentifier(
-                                drawable,
-                                "drawable",
-                                packageName
-                            ) > 0
-                        ) return loadDrawable(drawable)
+            }
+
+            // 2. 用 component 文件名找（原逻辑）
+            if (componentName != null) {
+                val start = componentName.indexOf("{") + 1
+                val end = componentName.indexOf("}", start)
+                if (end > start) {
+                    val candidate = componentName.substring(start, end)
+                        .lowercase(Locale.getDefault())
+                        .replace(".", "_").replace("/", "_")
+                    if (iconPackRes!!.getIdentifier(candidate, "drawable", packageName) > 0) {
+                        return loadDrawable(candidate)
                     }
                 }
             }
+
+            // 3. 按包名兜底匹配（vivo 壳 Activity 场景）
+            val fallback = fallbackDrawableByPackage(appPackageName)
+            if (fallback != null) return fallback
+
             return defaultDrawable
         }
 
@@ -176,37 +211,48 @@ class IconPackManager(val context: Context) {
         @Suppress("unused")
         fun getIconForPackage(appPackageName: String?, defaultBitmap: Bitmap): Bitmap? {
             if (!mLoaded) load()
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(appPackageName!!)
-            var componentName: String? = null
-            if (launchIntent != null) componentName =
-                context.packageManager.getLaunchIntentForPackage(appPackageName)!!.component.toString()
-            var drawable = mPackagesDrawables[componentName]
+            if (appPackageName == null) return generateBitmap(defaultBitmap)
+
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(appPackageName)
+            val componentName: String?
+
+            if (launchIntent != null) {
+                componentName = launchIntent.component?.toString()
+            } else {
+                val fallback = fallbackBitmapByPackage(appPackageName)
+                if (fallback != null) return fallback
+                return generateBitmap(defaultBitmap)
+            }
+
+            // 1. 精确匹配
+            val drawable = mPackagesDrawables[componentName]
             if (drawable != null) {
                 val bmp = loadBitmap(drawable)
                 return bmp ?: generateBitmap(defaultBitmap)
-            } else {
-                // try to get a resource with the component filename
-                if (componentName != null) {
-                    val start = componentName.indexOf("{") + 1
-                    val end = componentName.indexOf("}", start)
-                    if (end > start) {
-                        drawable =
-                            componentName.substring(start, end).lowercase(Locale.getDefault())
-                                .replace(".", "_").replace("/", "_")
-                        if (iconPackRes!!.getIdentifier(
-                                drawable,
-                                "drawable",
-                                packageName
-                            ) > 0
-                        ) return loadBitmap(drawable)
+            }
+
+            // 2. 用 component 文件名找
+            if (componentName != null) {
+                val start = componentName.indexOf("{") + 1
+                val end = componentName.indexOf("}", start)
+                if (end > start) {
+                    val candidate = componentName.substring(start, end)
+                        .lowercase(Locale.getDefault())
+                        .replace(".", "_").replace("/", "_")
+                    if (iconPackRes!!.getIdentifier(candidate, "drawable", packageName) > 0) {
+                        return loadBitmap(candidate) ?: generateBitmap(defaultBitmap)
                     }
                 }
             }
+
+            // 3. 按包名兜底匹配
+            val fallback = fallbackBitmapByPackage(appPackageName)
+            if (fallback != null) return fallback
+
             return generateBitmap(defaultBitmap)
         }
 
         private fun generateBitmap(defaultBitmap: Bitmap): Bitmap {
-            // if no support images in the icon pack return the bitmap itself
             if (mBackImages.size() == 0) return defaultBitmap
             val r = Random()
             val backImageInd = r.nextInt(mBackImages.size())
@@ -214,14 +260,11 @@ class IconPackManager(val context: Context) {
             val w = backImage!!.width
             val h = backImage.height
 
-            // create a bitmap for the result
             val result = createBitmap(w, h)
             val mCanvas = Canvas(result)
 
-            // draw the background first
             mCanvas.drawBitmap(backImage, 0f, 0f, null)
 
-            // create a mutable mask bitmap with the same mask
             val scaledBitmap: Bitmap =
                 if (defaultBitmap.width > w || defaultBitmap.height > h) {
                     defaultBitmap.scale((w * mFactor).toInt(), (h * mFactor).toInt(), false)
@@ -231,10 +274,8 @@ class IconPackManager(val context: Context) {
             val mutableMask = createBitmap(w, h)
             val maskCanvas = Canvas(mutableMask)
             if (mMaskImage != null) {
-                // draw the scaled bitmap with mask
                 maskCanvas.drawBitmap(mMaskImage!!, 0f, 0f, Paint())
 
-                // paint the bitmap with mask into the result
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG)
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
                 mCanvas.apply {
@@ -247,11 +288,9 @@ class IconPackManager(val context: Context) {
                     drawBitmap(mutableMask, 0f, 0f, paint)
                 }
                 paint.xfermode = null
-            } else  // draw the scaled bitmap with the back image as mask
-            {
+            } else {
                 maskCanvas.drawBitmap(backImage, 0f, 0f, Paint())
 
-                // paint the bitmap with mask into the result
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG)
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
                 mCanvas.apply {
@@ -265,11 +304,7 @@ class IconPackManager(val context: Context) {
                 }
                 paint.xfermode = null
             }
-            // paint the front
             if (mFrontImage != null) mCanvas.drawBitmap(mFrontImage!!, 0f, 0f, null)
-            // store the bitmap in cache
-            //BitmapCache.getInstance(mContext).putBitmap(key, result);
-            // return it
             return result
         }
 
@@ -297,7 +332,6 @@ class IconPackManager(val context: Context) {
         if (iconPacks == null || forceReload) {
             iconPacks = ArrayList()
 
-            // find apps with intent-filter "com.gau.go.launcherex.theme" and return build the HashMap
             val pm = context.packageManager
             val adwLauncherThemes = pm.queryIntentActivities(
                 Intent("org.adw.launcher.THEMES"),
@@ -308,7 +342,6 @@ class IconPackManager(val context: Context) {
                 PackageManager.GET_META_DATA
             )
 
-            // merge those lists
             val resolveInfo: MutableList<ResolveInfo> = ArrayList(adwLauncherThemes)
             resolveInfo.addAll(goLauncherThemes)
             for (ri in resolveInfo) {

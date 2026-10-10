@@ -1,5 +1,6 @@
 package ru.queuejw.lumetro.components.core.sidebar
 
+import android.accessibilityservice.AccessibilityService
 import ru.queuejw.lumetro.components.freeform.util.LogBuffer
 import android.content.Context
 import android.content.Intent
@@ -297,10 +298,12 @@ class AppListPanel(
     }
 
     fun recordAppClick(packageName: String) {
-        val current = clickHistory[packageName] ?: 0
-        clickHistory[packageName] = current + 1
-        clickPreferences.edit().putInt(packageName, current + 1).apply()
-    }
+    // 从 prefs 读真实值，避免 clickHistory 未加载时清零历史
+    val current = clickPreferences.getInt(packageName, 0)
+    val newCount = current + 1
+    clickHistory[packageName] = newCount
+    clickPreferences.edit().putInt(packageName, newCount).apply()
+}
 
     private fun getClickCount(packageName: String): Int {
         return clickHistory[packageName] ?: clickPreferences.getInt(packageName, 0)
@@ -431,9 +434,17 @@ class AppListPanel(
             }
 
             if (score > 0) {
-                val clickCount = getClickCount(app.mPackage ?: "")
-                SearchResult(app, score + clickCount * 5, "")
-            } else null
+    val clickCount = getClickCount(app.mPackage ?: "")
+    val clickBonus = when {
+        clickCount >= 20 -> 1500
+        clickCount >= 10 -> 1000
+        clickCount >= 5 -> 500
+        clickCount >= 3 -> 300
+        clickCount >= 1 -> 100
+        else -> 0
+    }
+    SearchResult(app, score + clickBonus, "")
+} else null
         }
 
         val matchedApps = results.sortedByDescending { it.score }.take(50).map { it.app }
@@ -451,7 +462,7 @@ class AppListPanel(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(Color.parseColor("#FF1A1A1A"))
+            setBackgroundColor(Color.parseColor("#FF141414"))
             isClickable = true
             isFocusable = true
         }
@@ -470,7 +481,7 @@ class AppListPanel(
             LinearLayout.LayoutParams.MATCH_PARENT,
             200.dpToPx()
         )
-        setBackgroundColor(Color.parseColor("#FF1A1A1A"))
+        setBackgroundColor(Color.parseColor("#FF141414"))
         setPadding(4.dpToPx(), 6.dpToPx(), 4.dpToPx(), 8.dpToPx())
         gravity = Gravity.CENTER
 
@@ -559,25 +570,30 @@ class AppListPanel(
     }
 
     private fun createSearchDisplayKey(): View {
-        return TextView(context).apply {
-            text = ""
-            textSize = 11f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
-                setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
-            }
-            background = createMacKeyBackground()
-            setOnLongClickListener { clearT9Input(); true }
-            searchEditTextRef = WeakReference(this)
+    return TextView(context).apply {
+        text = ""
+        textSize = 11f
+        setTextColor(Color.parseColor("#FFE8E8E8"))
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
+            setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
         }
+        // 搜索键：比键盘底更深的色，制造"内凹"感
+        background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = 6.dpToPx().toFloat()
+            setColor(Color.parseColor("#FF0F0F0F"))
+        }
+        setOnLongClickListener { clearT9Input(); true }
+        searchEditTextRef = WeakReference(this)
     }
+}
 
     private fun createSettingsKey(): View {
         return TextView(context).apply {
             text = "⚙"
             textSize = 14f
-            setTextColor(Color.parseColor("#FFEBEBF5"))
+            setTextColor(Color.parseColor("#FFE8E8E8"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
                 setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
@@ -1593,7 +1609,7 @@ class AppListPanel(
         val mainText = TextView(context).apply {
             text = "隐藏"
             textSize = 11f
-            setTextColor(Color.parseColor("#FFEBEBF5"))
+            setTextColor(Color.parseColor("#FFE8E8E8"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1607,7 +1623,7 @@ class AppListPanel(
         val subText = TextView(context).apply {
             text = "锁定"
             textSize = 8f
-            setTextColor(Color.parseColor("#88FFFFFF"))
+            setTextColor(Color.parseColor("#66E8E8E8"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1652,7 +1668,7 @@ class AppListPanel(
         val mainText = TextView(context).apply {
             text = "控制"
             textSize = 11f
-            setTextColor(Color.parseColor("#FFEBEBF5"))
+            setTextColor(Color.parseColor("#FFE8E8E8"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1666,7 +1682,7 @@ class AppListPanel(
         val subText = TextView(context).apply {
             text = "省电"
             textSize = 8f
-            setTextColor(Color.parseColor("#88FFFFFF"))
+            setTextColor(Color.parseColor("#66E8E8E8"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1686,7 +1702,7 @@ class AppListPanel(
     return TextView(context).apply {
         text = label
         textSize = 11f
-        setTextColor(Color.parseColor("#FFEBEBF5"))
+        setTextColor(Color.parseColor("#FFE8E8E8"))
         gravity = Gravity.CENTER
         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f).apply {
             setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
@@ -1758,7 +1774,7 @@ class AppListPanel(
         val mainText = TextView(context).apply {
             text = if (letters.isEmpty()) digit else "$digit $letters"
             textSize = 14f
-            setTextColor(Color.parseColor("#FFEBEBF5"))
+            setTextColor(Color.parseColor("#FFE8E8E8"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1774,7 +1790,7 @@ class AppListPanel(
             val labelText = TextView(context).apply {
                 text = binding.label
                 textSize = 8f
-                setTextColor(Color.parseColor("#88FFFFFF"))
+                setTextColor(Color.parseColor("#99E8E8E8"))
                 gravity = Gravity.CENTER
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1872,7 +1888,7 @@ class AppListPanel(
         return TextView(context).apply {
             text = "${key.label} ${key.letters}"
             textSize = 14f
-            setTextColor(Color.parseColor("#FFEBEBF5"))
+            setTextColor(Color.parseColor("#FFE8E8E8"))
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                 setMargins(2.dpToPx(), 0, 2.dpToPx(), 0)
@@ -1883,17 +1899,21 @@ class AppListPanel(
     }
 
     private fun createMacKeyBackground(): android.graphics.drawable.Drawable {
-        return android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = 8.dpToPx().toFloat()
-            colors = intArrayOf(
-                Color.parseColor("#FF2A2A2A"),
-                Color.parseColor("#FF1A1A1A")
-            )
-            orientation = android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM
-            setStroke(1, Color.parseColor("#FF333333"))
-        }
+    val normal = android.graphics.drawable.GradientDrawable().apply {
+        shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+        cornerRadius = 6.dpToPx().toFloat()
+        setColor(Color.parseColor("#FF1F1F1F"))
     }
+    val pressed = android.graphics.drawable.GradientDrawable().apply {
+        shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+        cornerRadius = 6.dpToPx().toFloat()
+        setColor(Color.parseColor("#FF2A2A2A"))
+    }
+    return android.graphics.drawable.StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_pressed), pressed)
+        addState(intArrayOf(), normal)
+    }
+}
 
     private fun handleT9Input(digit: String) {
         t9Input.append(digit)
@@ -1981,35 +2001,46 @@ class AppListPanel(
     }
 
     private fun performOneKeyFreeze() {
-        val sh = ShizukuHelper.getInstance()
-        ShizukuHelper.getInstance().checkStatus()
-        if (!sh.isReady()) {
-            Toast.makeText(context, "Shizuku 未就绪", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val list = FreezeManager.getList(context)
-        if (list.isEmpty()) {
-            Toast.makeText(context, "冻结列表为空", Toast.LENGTH_SHORT).show()
-            return
-        }
-        coroutineScope.launch(Dispatchers.IO) {
-            var count = 0
-            for (pkg in list) {
-                if (FreezeManager.isFrozen(context, pkg)) continue
-                iconLoader.getIconForPackage(context, pkg)
-                if (sh.freezeApp(pkg)) {
-                    FreezeManager.setFrozen(context, pkg, true)
-                    count++
-                    delay(50)
-                }
+    val sh = ShizukuHelper.getInstance()
+    ShizukuHelper.getInstance().checkStatus()
+    if (!sh.isReady()) {
+        Toast.makeText(context, "Shizuku 未就绪", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val list = FreezeManager.getList(context)
+    if (list.isEmpty()) {
+        Toast.makeText(context, "冻结列表为空", Toast.LENGTH_SHORT).show()
+        return
+    }
+
+    // ========== 收起九键面板 + 回主页 ==========
+    onHidePanel()
+    try {
+        val svc = overlayContext as? AccessibilityService
+        svc?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+    } catch (e: Exception) {
+        // 忽略
+    }
+    // ==========================================
+
+    coroutineScope.launch(Dispatchers.IO) {
+        var count = 0
+        for (pkg in list) {
+            if (FreezeManager.isFrozen(context, pkg)) continue
+            iconLoader.getIconForPackage(context, pkg)
+            if (sh.freezeApp(pkg)) {
+                FreezeManager.setFrozen(context, pkg, true)
+                count++
+                delay(50)
             }
-            withContext(Dispatchers.Main) {
-                Toast.makeText(context, "已冻结 $count 个应用", Toast.LENGTH_SHORT).show()
-                onRefreshTiles()
-                onRefreshApps()
-            }
+        }
+        withContext(Dispatchers.Main) {
+            Toast.makeText(context, "已冻结 $count 个应用", Toast.LENGTH_SHORT).show()
+            onRefreshTiles()
+            onRefreshApps()
         }
     }
+}
 
     fun loadApps(apps: List<App>) {
         allApps = apps
