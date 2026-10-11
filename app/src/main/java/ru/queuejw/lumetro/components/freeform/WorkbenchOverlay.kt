@@ -872,7 +872,7 @@ cachedAppsHash = apps.hashCode()
     },
     onShowFreezeDialog = {},
     onPinApp = {},
-    onRefreshApps = {},
+    onRefreshApps = { manager.refreshApps() },
     onAppsChanged = { apps ->
         updateSearchSlots(apps)
     },
@@ -1179,15 +1179,15 @@ return if (snapshot.isNotEmpty()) snapshot else apps
         perfLog("forceRefreshIcons")
         refreshAppSlots()
 
+        val apps = manager.getCachedApps()
+        cachedApps = apps.toMutableList()
+        cachedAppsHash = apps.hashCode()
+
         if (isAppsPanelShowing) {
-            val apps = manager.getCachedApps()
-            cachedApps = apps.toMutableList()
-cachedAppsHash = apps.hashCode()
             preCreatedAppListPanel?.refresh(apps)
             Log.d(TAG, "App list panel refreshed with ${apps.size} apps")
         }
 
-        val apps = manager.getCachedApps()
         var count = 0
         for (app in apps) {
             app.mPackage?.let { pkg ->
@@ -1238,16 +1238,13 @@ fun showAppsList() {
         searchAppSlots.add("" to "")
     }
 
-    if (cachedApps.isEmpty()) {
-        val warm = manager.getCachedApps()
-        if (warm.isNotEmpty()) {
-            cachedApps = warm.toMutableList()
-            cachedAppsHash = warm.hashCode()
-            perfLog("showAppsList: seeded cachedApps from manager (${warm.size})")
-        }
+    val managerApps = manager.getCachedApps()
+    if (managerApps.isNotEmpty()) {
+        cachedApps = managerApps.toMutableList()
+        cachedAppsHash = managerApps.hashCode()
+        perfLog("showAppsList: synced cachedApps from manager (${managerApps.size})")
     }
-
-    val allApps = cachedApps.ifEmpty { manager.getCachedApps() }
+    val allApps = managerApps.ifEmpty { cachedApps }
     for (app in allApps.take(MAX_APPS)) {
         val pkg = app.mPackage ?: continue
         searchAppSlots.add(pkg to app.mName)
@@ -1384,13 +1381,9 @@ fun showAppsList() {
                 (view.parent as? ViewGroup)?.removeView(view)
                 contentContainer.addView(view)
 
-                val snap = cachedApps
-val currentApps = if (snap.isNotEmpty()) snap else runBlocking { manager.getCachedApps() }
-
-if (snap.isEmpty() && currentApps.isNotEmpty()) {
-    cachedApps = currentApps.toMutableList()
-    cachedAppsHash = currentApps.hashCode()
-}
+                val currentApps = manager.getCachedApps()
+                cachedApps = currentApps.toMutableList()
+                cachedAppsHash = currentApps.hashCode()
 
                 preCreatedAppListPanel?.refresh(currentApps)
                 perfLog("showPreCreatedAppList: refreshed with ${currentApps.size} apps")
@@ -1551,7 +1544,7 @@ if (snapFB.isEmpty()) {
     },
     onShowFreezeDialog = {},
     onPinApp = {},
-    onRefreshApps = {},
+    onRefreshApps = { manager.refreshApps() },
     onAppsChanged = { apps ->
         updateSearchSlots(apps)
     },

@@ -218,7 +218,7 @@ class LandscapeWorkbenchOverlay(
                 },
                 onShowFreezeDialog = {},
                 onPinApp = {},
-                onRefreshApps = {},
+                onRefreshApps = { manager.refreshApps() },
                 onAppsChanged = { apps ->
                     handler.post {
                         appListContainerRef?.let { container ->
