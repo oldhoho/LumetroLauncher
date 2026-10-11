@@ -157,7 +157,7 @@ private fun checkAppListPermission() {
 }
 
     // ========== 性能日志 ==========
-    private val perfLogEnabled = false
+    private val perfLogEnabled = true
     
     private fun perfLog(message: String) {
         if (!perfLogEnabled) return
@@ -228,7 +228,6 @@ private var cachedApps = mutableListOf<App>()
                     coroutineScope.launch {
                         delay(300)
                         refreshApps()
-                        workbenchOverlayRef?.get()?.forceRefreshIcons()
                     }
                 }
                 Intent.ACTION_PACKAGE_REMOVED -> {
@@ -240,7 +239,6 @@ private var cachedApps = mutableListOf<App>()
                     coroutineScope.launch {
                         delay(300)
                         refreshApps()
-                        workbenchOverlayRef?.get()?.forceRefreshIcons()
                     }
                 }
             }
@@ -312,13 +310,7 @@ private var cachedApps = mutableListOf<App>()
         val iconPack = prefs.getString("icon_pack_package", null)
         iconLoader = IconLoader(iconPack != null, iconPack)
 
-        initializeWorkbench()
-        
-        // ========== 检查"读取应用列表"权限 ==========
-        checkAppListPermission()
-
-        
-        // 同步加载应用列表
+        // 先同步加载应用列表，再创建 overlay —— 保证 preCreateAppListPanel 预创建时能拿到数据
         perfLog("init: loading apps synchronously")
         val apps = loadAppsFromPackageManager()
         synchronized(cacheLock) {
@@ -328,6 +320,13 @@ private var cachedApps = mutableListOf<App>()
             cachedApps = apps.toMutableList()
         }
         perfLog("init: loaded ${apps.size} apps")
+
+        initializeWorkbench()
+        
+        // ========== 检查"读取应用列表"权限 ==========
+        checkAppListPermission()
+
+        
         
         // ========== 注册应用安装/卸载广播 ==========
         try {
@@ -341,6 +340,7 @@ private var cachedApps = mutableListOf<App>()
             perfLog("App install receiver registered")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to register app install receiver", e)
+            perfLog("Failed to register app install receiver: ${e.message}")
         }
         
         // ========== 注册屏幕状态广播 ==========
@@ -713,15 +713,22 @@ while (isLoadingApps && retryCount < 10) {
             // 整体替换，避免 clear/addAll 的并发问题
             cachedApps = apps.toMutableList()
             Log.d(TAG, "Apps refreshed: ${cachedApps.size} apps")
+            perfLog("Apps refreshed: ${cachedApps.size} apps")
 
-            withContext(Dispatchers.Main) {
-                workbenchOverlayRef?.get()?.forceRefreshIcons()
-            }
+            notifyAppsChanged()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to refresh apps", e)
+            perfLog("Apps refresh FAILED: ${e.message}")
         }
     }
 }
+
+    // 统一通知 Overlay：应用列表已变化，刷新面板并同步快照
+    private fun notifyAppsChanged() {
+        coroutineScope.launch(Dispatchers.Main) {
+            workbenchOverlayRef?.get()?.forceRefreshIcons()
+        }
+    }
 
     fun getCachedApps(): List<App> = cachedApps.toList()
 

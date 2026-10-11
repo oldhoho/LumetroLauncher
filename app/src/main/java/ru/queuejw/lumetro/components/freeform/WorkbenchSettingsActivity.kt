@@ -320,6 +320,15 @@ class WorkbenchSettingsActivity : AppCompatActivity() {
                 Toast.makeText(this, "打开失败: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
+
+        findViewById<Button>(R.id.btn_refresh_apps)?.setOnClickListener {
+            if (workbenchManager == null) {
+                Toast.makeText(this, "WorkbenchManager 未初始化", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            workbenchManager?.refreshApps()
+            Toast.makeText(this, "已触发应用列表刷新", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun applySettings() {
