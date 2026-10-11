@@ -2177,6 +2177,9 @@ private inner class GestureContainer(
 
     // ========== 添加 createAppItem 方法 ==========
     // ========== 创建应用图标 ==========
+private fun keycapBg(): android.graphics.drawable.Drawable =
+    ru.queuejw.lumetro.components.ui.keycap.KeycapHelper.create(context, 12f, 3f)
+
 private fun createAppItem(packageName: String, appName: String, isForeground: Boolean, slotWidth: Int): View {
     // ========== 空白占位符处理 ==========
     if (packageName.isEmpty()) {
@@ -2198,7 +2201,7 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
             currentMode == Mode.ADD && !blacklist.contains(packageName) -> setBackgroundColor(Color.parseColor("#22FFFFFF"))
             currentMode == Mode.REMOVE && blacklist.contains(packageName) -> setBackgroundColor(Color.parseColor("#33FF4444"))
             isForeground -> setBackgroundColor(Color.parseColor("#33FF8800"))
-            else -> setBackgroundColor(Color.TRANSPARENT)
+            else -> background = keycapBg()
         }
 
         setOnClickListener {
@@ -2280,12 +2283,12 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
                         isLongPressTriggered = false
                         longPressPackage = ""
                         longPressName = ""
-                        view.setBackgroundColor(Color.TRANSPARENT)
+                        view.background = keycapBg()
                         when {
                             currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
                             currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
                             isForeground -> view.setBackgroundColor(Color.parseColor("#33FF8800"))
-                            else -> view.setBackgroundColor(Color.TRANSPARENT)
+                            else -> view.background = keycapBg()
                         }
                         return@setOnTouchListener false
                     }
@@ -2320,7 +2323,7 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
                             currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
                             currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
                             isForeground -> view.setBackgroundColor(Color.parseColor("#33FF8800"))
-                            else -> view.setBackgroundColor(Color.TRANSPARENT)
+                            else -> view.background = keycapBg()
                         }
                     }
 
@@ -2406,7 +2409,7 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
             )
 
             when (currentMode) {
-                Mode.NORMAL -> setBackgroundColor(Color.TRANSPARENT)
+                Mode.NORMAL -> background = keycapBg()
                 Mode.ADD -> setBackgroundColor(Color.parseColor("#22FFFFFF"))
                 Mode.REMOVE -> setBackgroundColor(Color.parseColor("#33FF4444"))
             }

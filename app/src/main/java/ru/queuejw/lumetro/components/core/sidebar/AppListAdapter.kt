@@ -49,9 +49,12 @@ class AppListAdapter(
             layoutParams = RecyclerView.LayoutParams(
                 RecyclerView.LayoutParams.MATCH_PARENT,
                 48.dpToPx()
-            )
+            ).apply {
+                setMargins(8.dpToPx(), 4.dpToPx(), 8.dpToPx(), 4.dpToPx())
+            }
             setPadding(16.dpToPx(), 4.dpToPx(), 16.dpToPx(), 4.dpToPx())
             gravity = Gravity.CENTER_VERTICAL
+            background = ru.queuejw.lumetro.components.ui.keycap.KeycapHelper.create(parent.context, 12f, 3f)
         }
 
         val icon = ImageView(parent.context).apply {
@@ -84,7 +87,6 @@ class AppListAdapter(
 
         // 特殊按钮：冻结
         if (app.mPackage == "freeze_button") {
-            holder.container.setBackgroundColor(colorButtonBg)
             holder.icon.setImageResource(android.R.drawable.ic_lock_lock)
             holder.label.text = "❄ 一键冻结"
             holder.container.setOnClickListener { onFreezeClick() }
@@ -94,7 +96,6 @@ class AppListAdapter(
 
         // 特殊按钮：设置
         if (app.mPackage == "settings_button") {
-            holder.container.setBackgroundColor(colorButtonBg)
             holder.icon.setImageResource(android.R.drawable.ic_menu_manage)
             holder.label.text = "⚙ 设置"
             holder.container.setOnClickListener { onSettingsClick() }
@@ -104,7 +105,6 @@ class AppListAdapter(
 
         // 普通应用
         val isFrozen = app.mPackage?.let { FreezeManager.isFrozen(context, it) } ?: false
-        holder.container.setBackgroundColor(if (isFrozen) colorFrozen else Color.TRANSPARENT)
         holder.container.alpha = if (isFrozen) 0.6f else 1f
 
         // 加载图标

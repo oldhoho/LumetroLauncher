@@ -1899,21 +1899,8 @@ class AppListPanel(
     }
 
     private fun createMacKeyBackground(): android.graphics.drawable.Drawable {
-    val normal = android.graphics.drawable.GradientDrawable().apply {
-        shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-        cornerRadius = 6.dpToPx().toFloat()
-        setColor(Color.parseColor("#FF1F1F1F"))
+        return ru.queuejw.lumetro.components.ui.keycap.KeycapHelper.create(context, 8f, 3f)
     }
-    val pressed = android.graphics.drawable.GradientDrawable().apply {
-        shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-        cornerRadius = 6.dpToPx().toFloat()
-        setColor(Color.parseColor("#FF2A2A2A"))
-    }
-    return android.graphics.drawable.StateListDrawable().apply {
-        addState(intArrayOf(android.R.attr.state_pressed), pressed)
-        addState(intArrayOf(), normal)
-    }
-}
 
     private fun handleT9Input(digit: String) {
         t9Input.append(digit)
