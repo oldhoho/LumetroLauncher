@@ -6,9 +6,11 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.StateListDrawable
 import android.util.TypedValue
+import androidx.core.content.ContextCompat
+import ru.queuejw.lumetro.R
 
 /**
- * 拟物机械键盘键帽背景：底座(厚度) + 顶面渐变 + 顶部高光 + 描边；
+ * 拟物机械键盘键帽背景：底座(厚度) + 顶面渐变 + 顶部高光 + 金属边框贴图 + 描边；
  * 按下态顶面下沉，制造实体按键的按压感。可选 [tint] 叠加一层半透明色用于状态高亮。
  */
 object KeycapHelper {
@@ -59,19 +61,23 @@ object KeycapHelper {
             colors = intArrayOf(if (pressed) 0x10FFFFFF else 0x24FFFFFF, 0x00FFFFFF)
         }
 
-        val layers = if (tint != null) {
-            val tintLayer = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = radius
-                setColor(tint)
-            }
-            arrayOf(base, face, highlight, tintLayer)
-        } else {
-            arrayOf(base, face, highlight)
+        val content = mutableListOf<Drawable>(base, face, highlight)
+        if (tint != null) {
+            content.add(
+                GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = radius
+                    setColor(tint)
+                }
+            )
         }
+
+        // 金属边框贴图作为最顶层（中间透明，露出键帽面）
+        ContextCompat.getDrawable(context, R.drawable.icon_frame)?.let { content.add(it) }
 
         val faceTop = if (pressed) depth else 0
         val faceBottom = if (pressed) 0 else depth
+        val layers = content.toTypedArray()
 
         return LayerDrawable(layers).apply {
             setLayerInset(0, 0, 0, 0, 0)

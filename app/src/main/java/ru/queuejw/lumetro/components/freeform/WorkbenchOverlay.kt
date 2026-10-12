@@ -2386,13 +2386,6 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
         }
         iconContainer.addView(iconView)
 
-        // ========== 金属外框（图标美化）==========
-        iconContainer.addView(ImageView(context).apply {
-            setImageResource(ru.queuejw.lumetro.R.drawable.icon_frame)
-            scaleType = ImageView.ScaleType.FIT_XY
-            layoutParams = FrameLayout.LayoutParams(iconSize, iconSize)
-        })
-
         // ========== 冻结角标（右上角❄） ==========
         if (isFrozen) {
             val badgeSize = 10.dpToPx()
