@@ -1077,6 +1077,7 @@ return if (snapshot.isNotEmpty()) snapshot else apps
     }
 
     fun show() {
+        animateSlotsOnNextRefresh = true
         if (isShowing) return
 
         val displayMetrics = context.resources.displayMetrics
@@ -1214,6 +1215,7 @@ return if (snapshot.isNotEmpty()) snapshot else apps
     private var isLoadingApps = false    // ← 新增字段
 
 fun showAppsList() {
+    animateSlotsOnNextRefresh = true
     perfLog("showAppsList START")
 
     if (isAppsPanelShowing) {
@@ -2015,6 +2017,7 @@ private inner class GestureContainer(
         val filtered = getFilteredApps()
         val totalPages = ((filtered.size + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE).coerceAtLeast(1)
         currentPage = (currentPage - 1 + totalPages) % totalPages
+        animateSlotsOnNextRefresh = true
         refreshAppSlots()
         updatePageIndicator()
     }
@@ -2023,6 +2026,7 @@ private inner class GestureContainer(
         val filtered = getFilteredApps()
         val totalPages = ((filtered.size + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE).coerceAtLeast(1)
         currentPage = (currentPage + 1) % totalPages
+        animateSlotsOnNextRefresh = true
         refreshAppSlots()
         updatePageIndicator()
     }
@@ -2139,6 +2143,25 @@ private inner class GestureContainer(
         updatePageIndicator()
     }
 
+    private var animateSlotsOnNextRefresh = false
+
+    private fun animateSlotsIn(container: ViewGroup) {
+        val density = context.resources.displayMetrics.density
+        container.post {
+            for (i in 0 until container.childCount) {
+                val child = container.getChildAt(i)
+                child.alpha = 0f
+                child.translationY = 24f * density
+                child.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setStartDelay((i * 30).toLong())
+                    .setDuration(220L)
+                    .start()
+            }
+        }
+    }
+
     fun refreshAppSlots() {
         appContainer.removeAllViews()
 
@@ -2173,12 +2196,17 @@ private inner class GestureContainer(
 
         appContainer.addView(wrapper)
         updatePageIndicator()
+
+        if (animateSlotsOnNextRefresh) {
+            animateSlotsOnNextRefresh = false
+            animateSlotsIn(wrapper)
+        }
     }
 
     // ========== 添加 createAppItem 方法 ==========
     // ========== 创建应用图标 ==========
-private fun keycapBg(): android.graphics.drawable.Drawable =
-    ru.queuejw.lumetro.components.ui.keycap.KeycapHelper.create(context, 12f, 3f)
+private fun keycapBg(tint: Int? = null): android.graphics.drawable.Drawable =
+    ru.queuejw.lumetro.components.ui.keycap.KeycapHelper.create(context, 12f, 3f, tint)
 
 private fun createAppItem(packageName: String, appName: String, isForeground: Boolean, slotWidth: Int): View {
     // ========== 空白占位符处理 ==========
@@ -2198,9 +2226,9 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
         )
 
         when {
-            currentMode == Mode.ADD && !blacklist.contains(packageName) -> setBackgroundColor(Color.parseColor("#22FFFFFF"))
-            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> setBackgroundColor(Color.parseColor("#33FF4444"))
-            isForeground -> setBackgroundColor(Color.parseColor("#33FF8800"))
+            currentMode == Mode.ADD && !blacklist.contains(packageName) -> background = keycapBg(0x22FFFFFF)
+            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> background = keycapBg(0x33FF4444)
+            isForeground -> background = keycapBg(0x33FF8800)
             else -> background = keycapBg()
         }
 
@@ -2266,7 +2294,7 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
 
                                 val actionText = if (isFrozen) "上滑解冻" else "上滑冻结"
                                 Toast.makeText(context, "$actionText $appName", Toast.LENGTH_SHORT).show()
-                                view.setBackgroundColor(Color.parseColor("#44FFAA00"))
+                                view.background = keycapBg(0x44FFAA00)
                             }
                         }
                         longPressRunnable = runnable
@@ -2285,9 +2313,9 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
                         longPressName = ""
                         view.background = keycapBg()
                         when {
-                            currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
-                            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
-                            isForeground -> view.setBackgroundColor(Color.parseColor("#33FF8800"))
+                            currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.background = keycapBg(0x22FFFFFF)
+                            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.background = keycapBg(0x33FF4444)
+                            isForeground -> view.background = keycapBg(0x33FF8800)
                             else -> view.background = keycapBg()
                         }
                         return@setOnTouchListener false
@@ -2319,10 +2347,10 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
 
                     if (isLongPressTriggered) {
                         when {
-                            isFrozen -> view.setBackgroundColor(Color.parseColor("#33AADDFF"))
-                            currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#22FFFFFF"))
-                            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.setBackgroundColor(Color.parseColor("#33FF4444"))
-                            isForeground -> view.setBackgroundColor(Color.parseColor("#33FF8800"))
+                            isFrozen -> view.background = keycapBg(0x33AADDFF)
+                            currentMode == Mode.ADD && !blacklist.contains(packageName) -> view.background = keycapBg(0x22FFFFFF)
+                            currentMode == Mode.REMOVE && blacklist.contains(packageName) -> view.background = keycapBg(0x33FF4444)
+                            isForeground -> view.background = keycapBg(0x33FF8800)
                             else -> view.background = keycapBg()
                         }
                     }
@@ -2410,8 +2438,8 @@ private fun createAppItem(packageName: String, appName: String, isForeground: Bo
 
             when (currentMode) {
                 Mode.NORMAL -> background = keycapBg()
-                Mode.ADD -> setBackgroundColor(Color.parseColor("#22FFFFFF"))
-                Mode.REMOVE -> setBackgroundColor(Color.parseColor("#33FF4444"))
+                Mode.ADD -> background = keycapBg(0x22FFFFFF)
+                Mode.REMOVE -> background = keycapBg(0x33FF4444)
             }
 
             setOnClickListener {
